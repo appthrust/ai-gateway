@@ -1,0 +1,77 @@
+apiVersion: appthrust.io/v1alpha1
+kind: ApplicationStackDefinition
+metadata:
+  name: ai-gateway
+spec:
+  access:
+    audiences:
+    - appthrust-platform-api
+    bearerPassThrough: true
+    scopes:
+    - openid
+    - profile
+    - email
+    tokenClaims:
+    - groups
+  components:
+  - defaultValues:
+      aiPolicy: {}
+      credentialSlots:
+      - displayName: OpenAI API key
+        env: AI_GATEWAY_OPENAI_API_KEY
+        name: openai
+        provider: OpenAI
+      - displayName: Anthropic API key
+        env: AI_GATEWAY_ANTHROPIC_API_KEY
+        name: anthropic
+        provider: Anthropic
+      internalService: true
+      livenessProbePath: /healthz
+      minScale: 1
+      port: 8080
+      readinessProbePath: /readyz
+      resources:
+        limits:
+          cpu: 500m
+          memory: 512Mi
+        requests:
+          cpu: 100m
+          memory: 128Mi
+    definitionRef:
+      name: web-service
+      version: v1
+    id: web
+  consumes:
+  - chat-completions.openai/v1
+  display:
+    category: assist
+    description: 'Project AI gateway: routes chat completions to allowed providers
+      under the Project AI policy and records invocations.'
+    iconRef:
+      name: sparkles
+    title: AI Gateway
+  health:
+    capabilities:
+    - name: chat-completions
+      required: true
+  publish:
+    hostnameLabel: ai-gateway
+  releaseIdentityEnvPrefix: AI_GATEWAY
+  updatePolicy:
+    allowed:
+    - pinned
+    - follow
+    default: pinned
+  # Publisher appends 0.3.0 with its built digest; retain both existing catalog floors.
+  versions:
+  - images:
+      web: ghcr.io/appthrust/platform/ai-gateway@sha256:ca64064f39883bc09f7d3d6b5c1cd380836b66eceebe2ff88743d106015c6e39
+    name: 0.1.0
+    served: true
+    stream: "0.1"
+  - default: true
+    images:
+      web: ghcr.io/appthrust/platform/ai-gateway@sha256:c8f16808c33a697d177182252dd530a74ce64e4ecbe35977c897fcf94c8fce0d
+    name: 0.2.0
+    served: true
+    stream: "0.2"
