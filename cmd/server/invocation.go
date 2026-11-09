@@ -61,6 +61,19 @@ type invocationItem struct {
 	bearer     string
 	body       []byte
 	enqueuedAt time.Time
+	delivery   invocationDelivery
+}
+
+// Optional per-record feedback is independent of the FIFO payload and its bearer.
+type invocationDelivery struct {
+	id     string
+	report func(string, invocationReport)
+}
+
+func (d invocationDelivery) notify(result invocationReport) {
+	if d.report != nil {
+		d.report(d.id, result)
+	}
 }
 
 func (item invocationItem) size() int64 { return int64(len(item.body)) + int64(len(item.bearer)) }
@@ -93,25 +106,30 @@ func newRecorder(ctx context.Context, origin, projectID string, transport http.R
 
 // enqueue snapshots the record and caller bearer without waiting for delivery.
 // Overflow drops the newest record, preserving the FIFO of accepted records.
-func (p *recorder) enqueue(bearer string, record aipolicy.InvocationRecord) {
+func (p *recorder) enqueue(bearer string, record aipolicy.InvocationRecord, delivery ...invocationDelivery) {
+	var feedback invocationDelivery
+	if len(delivery) != 0 {
+		feedback = delivery[0]
+	}
 	if p == nil {
+		feedback.notify(invocationReport{State: "Dropped", Reason: "shutdown"})
 		return
 	}
 	body, err := json.Marshal(record)
 	if err != nil {
-		p.drop(dropEncode, 0)
+		p.drop(feedback, dropEncode, 0)
 		return
 	}
-	item := invocationItem{bearer: bearer, body: body, enqueuedAt: time.Now()}
+	item := invocationItem{bearer: bearer, body: body, enqueuedAt: time.Now(), delivery: feedback}
 	p.mu.Lock()
 	if p.closed || p.ctx.Err() != nil {
 		p.mu.Unlock()
-		p.drop(dropShutdown, 0)
+		p.drop(feedback, dropShutdown, 0)
 		return
 	}
 	if p.queuedBytes.Load()+item.size() > invocationQueueBytes {
 		p.mu.Unlock()
-		p.drop(dropQueueBytes, 0)
+		p.drop(feedback, dropQueueBytes, 0)
 		return
 	}
 	p.queuedBytes.Add(item.size())
@@ -121,7 +139,7 @@ func (p *recorder) enqueue(bearer string, record aipolicy.InvocationRecord) {
 	default:
 		p.queuedBytes.Add(-item.size())
 		p.mu.Unlock()
-		p.drop(dropQueueFull, 0)
+		p.drop(feedback, dropQueueFull, 0)
 	}
 }
 
@@ -139,8 +157,9 @@ func (p *recorder) DroppedCount(reason dropReason) uint64 {
 	return p.dropped[reason].Load()
 }
 
-func (p *recorder) drop(reason dropReason, status int) {
+func (p *recorder) drop(delivery invocationDelivery, reason dropReason, status int) {
 	p.dropped[reason].Add(1)
+	delivery.notify(invocationReport{State: "Dropped", Reason: reason.String(), Status: status})
 	// Neither bearers, provider errors nor request/response bodies belong in logs.
 	if status != 0 {
 		log.Printf("AI invocation reporting dropped: %s (HTTP %d)", reason, status)
@@ -189,7 +208,7 @@ func (p *recorder) run() {
 			p.stopAccepting()
 			for item := range p.queue {
 				p.queuedBytes.Add(-item.size())
-				p.drop(dropShutdown, 0)
+				p.drop(item.delivery, dropShutdown, 0)
 			}
 			return
 		case item, ok := <-p.queue:
@@ -218,17 +237,18 @@ func (p *recorder) deliver(item invocationItem) {
 			if p.ctx.Err() != nil {
 				reason = dropShutdown
 			}
-			p.drop(reason, 0)
+			p.drop(item.delivery, reason, 0)
 			return
 		}
 		status, err := p.post(ctx, item)
 		if err == nil {
 			if status == http.StatusAccepted {
 				p.delivered.Add(1)
+				item.delivery.notify(invocationReport{State: "Delivered"})
 				return
 			}
 			if status != http.StatusRequestTimeout && status != http.StatusTooManyRequests && (status < 500 || status >= 600) {
-				p.drop(dropRejected, status)
+				p.drop(item.delivery, dropRejected, status)
 				return
 			}
 		}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 
 	"github.com/appthrust/appserver-go/appserver/identity"
@@ -52,4 +53,32 @@ func (g gatewayIdentity) Authenticate(ctx context.Context, header string) (ident
 		}
 	}
 	return caller, bearer, nil
+}
+
+type callerContextKey struct{}
+type streamContextKey struct{}
+
+func (g *gateway) authenticate(w http.ResponseWriter, r *http.Request) (identity.Identity, string, bool) {
+	caller, bearer, err := g.auth.Authenticate(r.Context(), r.Header.Get("Authorization"))
+	if err != nil {
+		if errors.Is(err, identity.ErrUnavailable) {
+			writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "Caller identity is temporarily unavailable")
+		} else {
+			writeError(w, http.StatusUnauthorized, "ai_unauthorized", "A valid caller bearer is required")
+		}
+		return identity.Identity{}, "", false
+	}
+	return caller, bearer, true
+}
+
+// Operational reads use the same membership gate, but never inference policy
+// enforcement, invocation reporting, or traffic-health observations.
+func (g *gateway) authenticatedRead(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, _, ok := g.authenticate(w, r)
+		if !ok {
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), callerContextKey{}, caller)))
+	}
 }

@@ -50,12 +50,14 @@ jobs:
       - name: Build and push both architectures
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           docker buildx build --platform linux/amd64,linux/arm64 --push \
             --tag "ghcr.io/appthrust/ai-gateway:$VERSION" \
             --label "org.opencontainers.image.source=https://github.com/appthrust/ai-gateway" \
             --label "org.opencontainers.image.version=$VERSION" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --secret id=NODE_AUTH_TOKEN,env=NODE_AUTH_TOKEN \
             --metadata-file "$RUNNER_TEMP/ai-gateway-image.json" .
       - name: Resolve and sign the image index
         id: image

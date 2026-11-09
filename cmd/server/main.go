@@ -15,6 +15,7 @@ import (
 	"github.com/appthrust/appserver-go/aigatewaydiscovery"
 	"github.com/appthrust/appserver-go/aipolicy"
 	"github.com/appthrust/appserver-go/appserver/identity"
+	"github.com/appthrust/appserver-go/appserver/launcher"
 	"github.com/appthrust/appserver-go/appserver/link"
 	"github.com/appthrust/appserver-go/appserver/platformclient"
 	"github.com/appthrust/appserver-go/appserver/platformenv"
@@ -36,9 +37,10 @@ func policyFromEnv() (aipolicy.Document, error) {
 
 func main() {
 	listen := flag.String("listen", ":8080", "HTTP listen address")
+	staticDir := flag.String("static-dir", defaultStaticDir(), "SPA asset directory")
 	flag.Parse()
 	if flag.NArg() != 0 {
-		log.Fatal("usage: ai-gateway-server [--listen :8080]")
+		log.Fatal("usage: ai-gateway-server [--listen :8080] [--static-dir /srv/ai-gateway]")
 	}
 	platform, err := platformenv.FromEnv()
 	if err != nil {
@@ -61,6 +63,8 @@ func main() {
 		auth:   gatewayIdentity{auth: auth, platform: platformclient.New(platform.APIURL, platform.ProjectID, platformclient.WithHTTPClient(auth.HTTPClient())), project: platform.ProjectID},
 		policy: document, providers: registryFromEnv(resolver),
 		defaultProvider: os.Getenv("AI_GATEWAY_DEFAULT_PROVIDER"), defaultModel: os.Getenv("AI_GATEWAY_DEFAULT_MODEL"),
+		staticDir: *staticDir, projectID: platform.ProjectID,
+		launcher: launcher.NewHandler(launcher.NewCatalog(platformclient.New(platform.APIURL, platform.ProjectID, platformclient.WithHTTPClient(auth.HTTPClient())), "ai-gateway"), auth.Authenticate),
 		// Reporting outlives the signal context so HTTP shutdown can finish enqueueing.
 		recorder: newRecorder(context.Background(), platform.APIURL, platform.ProjectID, auth.HTTPClient().Transport),
 	}
