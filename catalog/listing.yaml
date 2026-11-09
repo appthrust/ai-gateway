@@ -22,56 +22,56 @@ locales:
 
       転送先は LLM など Project 内のモデルアプリで、OpenAI と Anthropic も認証情報に API キーを設定すれば使えます。AI Gateway は Project の中で動き、認証された呼び出し元だけを受け付けます。呼び出しの記録は会話の本文を含めずに、Project の監査記録へ送ります。
 highlights:
-  - screenshot: policy
-    locales:
-      en:
-        title: Only the models your policy allows
-        body: The gateway applies the Project's effective AI policy to every request. A provider or model outside the policy is refused, and when an app leaves the model unset, the policy's default model is used.
-      ja:
-        title: 許可したモデルにだけ送る
-        body: Project に適用された AI ポリシーを、すべてのリクエストに当てはめます。ポリシーにないプロバイダーやモデルは拒否し、アプリがモデルを指定しなければポリシーの既定のモデルを使います。
-  - screenshot: org-policy
-    locales:
-      en:
-        title: One organisation policy, bound per Project
-        body: Platform admins set providers, models and logging once as an organisation AI policy and bind it to Projects. Changing the policy changes what the gateway allows in every Project that uses it.
-      ja:
-        title: 組織のポリシーを Project に割り当て
-        body: プラットフォーム管理者がプロバイダー、モデル、記録方法を組織の AI ポリシーとして一度決め、Project に割り当てます。ポリシーを変えると、そのポリシーを使うすべての Project で AI Gateway が許可する範囲も変わります。
-  - screenshot: restrictions
-    locales:
-      en:
-        title: Call records without the conversation
-        body: The gateway reports a best-effort record for each call with provider, model, outcome, duration, and token counts when the provider returns them. With hash-only conversation logging, the record keeps hashes of the prompt and reply instead of their text. Projects can narrow providers, models and logging further.
-      ja:
-        title: 会話の本文を残さずに呼び出しを記録
-        body: 呼び出しごとに、プロバイダー、モデル、結果、所要時間と、プロバイダーが返した場合はトークン数を記録として送ります（ベストエフォート）。会話の記録が「ハッシュのみ」なら、プロンプトと応答の本文の代わりにハッシュ値を残します。Project ごとに、プロバイダー・モデル・記録方法をさらに絞り込めます。
-  - screenshot: connected-apps
-    locales:
-      en:
-        title: Shared by the Project's apps
-        body: Knowledge and Contacts send their AI requests through the gateway. It forwards them to the Project's own model apps such as LLM, or to OpenAI and Anthropic once their API keys are set.
-      ja:
-        title: Project のアプリで共通に使う
-        body: Knowledge や Contacts は、AI Gateway を通して AI を呼び出します。転送先は LLM など Project 内のモデルアプリで、API キーを設定すれば OpenAI や Anthropic も使えます。
+- screenshot: policy
+  locales:
+    en:
+      title: Only the models your policy allows
+      body: The gateway applies the Project's effective AI policy to every request. A provider or model outside the policy is refused, and when an app leaves the model unset, the policy's default model is used.
+    ja:
+      title: 許可したモデルにだけ送る
+      body: Project に適用された AI ポリシーを、すべてのリクエストに当てはめます。ポリシーにないプロバイダーやモデルは拒否し、アプリがモデルを指定しなければポリシーの既定のモデルを使います。
+- screenshot: org-policy
+  locales:
+    en:
+      title: One organisation policy, bound per Project
+      body: Platform admins set providers, models and logging once as an organisation AI policy and bind it to Projects. Changing the policy changes what the gateway allows in every Project that uses it.
+    ja:
+      title: 組織のポリシーを Project に割り当て
+      body: プラットフォーム管理者がプロバイダー、モデル、記録方法を組織の AI ポリシーとして一度決め、Project に割り当てます。ポリシーを変えると、そのポリシーを使うすべての Project で AI Gateway が許可する範囲も変わります。
+- screenshot: restrictions
+  locales:
+    en:
+      title: Call records without the conversation
+      body: The gateway reports a best-effort record for each call with provider, model, outcome, duration, and token counts when the provider returns them. With hash-only conversation logging, the record keeps hashes of the prompt and reply instead of their text. Projects can narrow providers, models and logging further.
+    ja:
+      title: 会話の本文を残さずに呼び出しを記録
+      body: 呼び出しごとにプロバイダー、モデル、結果、所要時間、トークン数を記録として送ります。会話の記録が「ハッシュのみ」なら、本文の代わりにハッシュ値を残します。Project ごとに、プロバイダー・モデル・記録方法を絞り込めます。
+- screenshot: connected-apps
+  locales:
+    en:
+      title: Shared by the Project's apps
+      body: Knowledge and Contacts send their AI requests through the gateway. It forwards them to the Project's own model apps such as LLM, or to OpenAI and Anthropic once their API keys are set.
+    ja:
+      title: Project のアプリで共通に使う
+      body: Knowledge や Contacts は、AI Gateway を通して AI を呼び出します。転送先は LLM など Project 内のモデルアプリで、API キーを設定すれば OpenAI や Anthropic も使えます。
 screenshots:
-  - name: policy
-    file: policy.webp
-    alt:
-      en: "Dashboard Project settings, AI tab: policy \"default\" bound and ready; the effective policy lists provider llm with gemma3 models and provider openai with gpt-5 models, conversation logging hash only, tool call logging off, retention 90d."
-      ja: "Dashboard の Project 設定「AI」タブ。組織のポリシー「default」が割り当て済み・準備完了と表示され、有効なポリシーとしてプロバイダー llm（llm.internal、gemma3 系モデル）と openai（api.openai.com、gpt-5 系モデル）、会話の記録「ハッシュのみ」、ツール呼び出しの記録「オフ」、保持 90d が並んでいます。"
-  - name: org-policy
-    file: org-policy.webp
-    alt:
-      en: "Dashboard AI policies page: the organisation policy \"default\" marked ready, with providers llm and openai and their allowed models, approval policies, logging set to hash only with 90-day retention, and the Project that uses it."
-      ja: "Dashboard の「AI ポリシー」画面。組織のポリシー「default」が準備完了と表示され、プロバイダー llm と openai と許可したモデル、承認ポリシー、会話の記録「ハッシュのみ」と保持期間 90d、利用中の Project が並んでいます。"
-  - name: restrictions
-    file: restrictions.webp
-    alt:
-      en: "The \"Restrictions for this Project\" section: checkboxes for providers llm and openai and their models, approval modes, logging selectors for conversation and tool calls, a retention field, denied data classifications and a Save button."
-      ja: "「この Project の制限」セクション。プロバイダー llm と openai、各モデルのチェックボックス、承認モード、会話とツール呼び出しの記録方法の選択欄、保存期間の入力欄、拒否するデータ分類、保存ボタンが並んでいます。"
-  - name: connected-apps
-    file: connected-apps.webp
-    alt:
-      en: "AI Gateway installation page in the Dashboard: Dependencies lists Contacts and Knowledge as apps using it, and Connected apps shows LLM ready at its Project URL, with Inference and Vision not installed."
-      ja: "Dashboard の AI Gateway インストール画面。「依存関係」の利用しているアプリに Contacts と Knowledge が、「連携アプリ」に準備完了の LLM と、未インストールの Inference と Vision が表示されています。"
+- name: policy
+  file: policy.webp
+  alt:
+    en: 'Dashboard Project settings, AI tab: policy "default" bound and ready; the effective policy lists provider llm with gemma3 models and provider openai with gpt-5 models, conversation logging hash only, tool call logging off, retention 90d.'
+    ja: Dashboard の Project 設定「AI」タブ。ポリシー「default」が割り当て済みで、有効なプロバイダー llm と openai、会話の記録「ハッシュのみ」、保持 90 日が表示されています。
+- name: org-policy
+  file: org-policy.webp
+  alt:
+    en: 'Dashboard AI policies page: the organisation policy "default" marked ready, with providers llm and openai and their allowed models, approval policies, logging set to hash only with 90-day retention, and the Project that uses it.'
+    ja: Dashboard の「AI ポリシー」画面。組織のポリシー「default」が準備完了と表示され、プロバイダー llm と openai と許可したモデル、承認ポリシー、会話の記録「ハッシュのみ」と保持期間 90d、利用中の Project が並んでいます。
+- name: restrictions
+  file: restrictions.webp
+  alt:
+    en: 'The "Restrictions for this Project" section: checkboxes for providers llm and openai and their models, approval modes, logging selectors for conversation and tool calls, a retention field, denied data classifications and a Save button.'
+    ja: 「この Project の制限」セクション。プロバイダー llm と openai、各モデルのチェックボックス、承認モード、会話とツール呼び出しの記録方法の選択欄、保存期間の入力欄、拒否するデータ分類、保存ボタンが並んでいます。
+- name: connected-apps
+  file: connected-apps.webp
+  alt:
+    en: 'AI Gateway installation page in the Dashboard: Dependencies lists Contacts and Knowledge as apps using it, and Connected apps shows LLM ready at its Project URL, with Inference and Vision not installed.'
+    ja: Dashboard の AI Gateway インストール画面。「依存関係」の利用しているアプリに Contacts と Knowledge が、「連携アプリ」に準備完了の LLM と、未インストールの Inference と Vision が表示されています。
