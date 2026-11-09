@@ -16,7 +16,7 @@ Embeddings require an adapter that supports them. `/healthz`, `/readyz`,
 
 Use Go 1.26 or newer and Bun 1.4.1. The app depends on the public
 [`github.com/appthrust/appserver-go`](https://github.com/appthrust/appserver-go)
-SDK at `v0.2.0`, including `aipolicy`. No platform checkout, local module
+SDK at `v0.3.0`, including `aipolicy`. No platform checkout, local module
 replacement, web build, or npm registry is required.
 
 ```sh
@@ -40,6 +40,9 @@ as UID 65532 on port 8080. There is no target-architecture `RUN`, so a single
 Buildx builder can produce both Linux amd64 and arm64 without QEMU.
 
 ## Release
+
+Next release: **`v0.4.0`**, using the Project IAM access probe from
+appserver-go v0.3.0. Effective Project roles replace legacy ownership checks.
 
 The first app-owned release is **`0.3.0`**, tagged **`v0.3.0`**. Existing catalog
 versions `0.1.0` and `0.2.0` are immutable platform-image compatibility floors;

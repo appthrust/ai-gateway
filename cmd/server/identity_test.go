@@ -110,12 +110,8 @@ func TestGatewayUserMembershipRemainsIndependentOfDiscovery(t *testing.T) {
 					w.WriteHeader(http.StatusForbidden)
 					return
 				}
-				if r.URL.Path == "/api/v1/projects/pj-test" {
-					fmt.Fprint(w, `{"teamSlug":"team"}`)
-				} else {
-					require.Equal(t, "/api/v1/teams", r.URL.Path)
-					fmt.Fprint(w, `{"items":[{"id":"team-id","slug":"team","role":"Viewer"}]}`)
-				}
+				require.Equal(t, "/api/v1/projects/pj-test/access", r.URL.Path)
+				fmt.Fprint(w, `{"projectId":"pj-test","member":true,"role":"Viewer","platformRoles":[]}`)
 			}))
 			defer platform.Close()
 			auth, err := identity.New(identity.Trust{})

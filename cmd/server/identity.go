@@ -47,7 +47,7 @@ func (g gatewayIdentity) Authenticate(ctx context.Context, header string) (ident
 		if err != nil {
 			return identity.Identity{}, "", err
 		}
-		if access.NotMember || access.TeamID == "" {
+		if access.NotMember {
 			return identity.Identity{}, "", errors.New("Project membership is required")
 		}
 	}
