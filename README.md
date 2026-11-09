@@ -12,21 +12,42 @@ uses the gateway workload credential rather than forwarding caller authority.
 Embeddings require an adapter that supports them. `/healthz`, `/readyz`,
 `/releasez`, and application health are also available.
 
+The operational UI is served at `/` with SPA navigation. `GET /config` exposes
+public Project configuration; `GET /launcher` supplies the first-party app switcher.
+Authenticated operational routes are `GET /api/ai-gateway/v1/status`,
+`GET /api/ai-gateway/v1/providers`,
+`POST /api/ai-gateway/v1/providers/{name}/check`, and
+`GET /api/ai-gateway/v1/invocations`. These reads never record inference traffic.
+Provider checks share the five-minute probe/model cache; forced static-provider
+checks are single-flight and reject repeats within 30 seconds with HTTP 429.
+The invocation view retains 500 metadata-only entries since process start on
+this instance, including audit delivery outcomes; it is not durable history.
+See [the UI API contract](docs/ui-api.md) for response shapes and filters.
+
 ## Develop
 
 Use Go 1.26 or newer and Bun 1.4.1. The app depends on the public
 [`github.com/appthrust/appserver-go`](https://github.com/appthrust/appserver-go)
-SDK at `v0.2.0`, including `aipolicy`. No platform checkout, local module
-replacement, web build, or npm registry is required.
+SDK at `v0.3.0`, including `aipolicy`. No platform checkout or local module
+replacement is required. The SPA build requires GitHub Packages access through
+`NODE_AUTH_TOKEN` (a token with package-read access).
 
 ```sh
 go build ./... && go test ./...
 bun test hack/
-docker build --platform linux/amd64 -t ai-gateway-local .
+(cd web && bun install --frozen-lockfile && bun run build:image)
+docker build --platform linux/amd64 --secret id=NODE_AUTH_TOKEN,env=NODE_AUTH_TOKEN -t ai-gateway-local .
 ```
 
 Tests use local HTTP fixtures and mocked catalog responses; they need no live
-providers or Cloud credentials. The binary accepts `--listen` (default `:8080`).
+providers or Cloud credentials. The binary accepts `--listen` (default `:8080`)
+and `--static-dir` (default `AI_GATEWAY_STATIC_DIR` or `/srv/ai-gateway`).
+Use `--static-dir web/dist` for a local production SPA build; a missing asset
+directory logs once and leaves the API available, with HTTP 404 for `/`.
+`AI_GATEWAY_PUBLIC_URL` supplies the public origin. `PLATFORM_DASHBOARD_URL` is
+optional; no Dashboard origin is guessed. The internal endpoint is shown only
+when `AI_GATEWAY_URL` or the own Service's `K_SERVICE` and `POD_NAMESPACE`
+(or `NAMESPACE`) are injected.
 A deployed instance receives Project identity, discovery credentials, and AI
 policy configuration from AppThrust. Optional provider credential slots supply
 `AI_GATEWAY_OPENAI_API_KEY` and `AI_GATEWAY_ANTHROPIC_API_KEY`.
@@ -34,10 +55,11 @@ policy configuration from AppThrust. Optional provider credential slots supply
 unrestricted mode. An explicitly configured malformed policy fails startup;
 it never falls back to unrestricted mode.
 
-The Dockerfile cross-compiles a static Go binary in the build-host stage and
-copies it into `gcr.io/distroless/static:nonroot`. It runs `/ai-gateway-server`
-as UID 65532 on port 8080. There is no target-architecture `RUN`, so a single
-Buildx builder can produce both Linux amd64 and arm64 without QEMU.
+The Dockerfile builds the SPA with Bun and cross-compiles a static Go binary in
+build-host stages, then copies both into `gcr.io/distroless/static:nonroot`.
+No JavaScript runtime is needed. It runs `/ai-gateway-server` as UID 65532 on
+port 8080. There is no target-architecture `RUN`, so a single Buildx builder can
+produce both Linux amd64 and arm64 without QEMU.
 
 ## Release
 

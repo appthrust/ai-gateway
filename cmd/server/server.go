@@ -32,6 +32,10 @@ type gateway struct {
 	defaultProvider string
 	defaultModel    string
 	recorder        *recorder
+	invocationsRing invocationRing
+	staticDir       string
+	projectID       string
+	launcher        http.Handler
 }
 
 type invocationHandler func(http.ResponseWriter, *http.Request, *aipolicy.InvocationRecord)
@@ -41,6 +45,19 @@ func (g *gateway) handler() http.Handler {
 	mux.HandleFunc("POST /v1/chat/completions", g.authenticated(g.complete))
 	mux.HandleFunc("POST /v1/embeddings", g.authenticated(g.complete))
 	mux.HandleFunc("GET /v1/models", g.authenticated(g.models))
+	mux.HandleFunc("GET /config", g.config)
+	mux.HandleFunc("GET /api/ai-gateway/v1/status", g.authenticatedRead(g.status))
+	mux.HandleFunc("GET /api/ai-gateway/v1/providers", g.authenticatedRead(g.providerViews))
+	mux.HandleFunc("POST /api/ai-gateway/v1/providers/{name}/check", g.authenticatedRead(g.checkProvider))
+	mux.HandleFunc("GET /api/ai-gateway/v1/invocations", g.authenticatedRead(g.invocations))
+	if g.launcher != nil {
+		mux.Handle("GET /launcher", g.launcher)
+	}
+	mux.HandleFunc("/api", http.NotFound)
+	mux.HandleFunc("/v1", http.NotFound)
+	mux.HandleFunc("/api/", http.NotFound)
+	mux.HandleFunc("/v1/", http.NotFound)
+	mux.Handle("/", staticHandler(g.staticDir))
 	mountProbes(mux)
 	var applicationHealth health.Registry
 	applicationHealth.Capability("chat-completions", true, health.CheckFunc(g.checkHealth))
@@ -55,17 +72,27 @@ func (g *gateway) authenticated(next invocationHandler) http.HandlerFunc {
 		if logging := g.policy.Logging; logging != nil {
 			record.Logging = &aipolicy.InvocationLogging{Conversation: logging.Conversation, ToolCalls: logging.ToolCalls}
 		}
-		bearer := r.Header.Get("Authorization")
-		_, verified, err := g.auth.Authenticate(r.Context(), bearer)
-		if err != nil {
-			fail(w, &record, http.StatusUnauthorized, "ai_unauthorized", "A valid caller bearer is required")
+		caller, bearer, ok := g.authenticate(w, r)
+		if !ok {
 			return
 		}
-		bearer = verified
+		r = r.WithContext(context.WithValue(r.Context(), callerContextKey{}, caller))
+		stream := false
+		r = r.WithContext(context.WithValue(r.Context(), streamContextKey{}, &stream))
+		route := "chat"
+		if r.URL.Path == "/v1/embeddings" {
+			route = "embeddings"
+		}
+		if r.URL.Path == "/v1/models" {
+			route = "models"
+		}
+		id := g.invocationsRing.begin(caller, route, started)
+		w.Header().Set("X-Request-ID", id)
 		// Unauthenticated requests have no actor; the Platform API requires a Project member bearer.
 		defer func() {
 			record.DurationMs = time.Since(started).Milliseconds()
-			g.recorder.enqueue(bearer, record)
+			g.invocationsRing.finish(id, record, stream)
+			g.recorder.enqueue(bearer, record, invocationDelivery{id: id, report: g.invocationsRing.report})
 			if r.URL.Path == "/v1/chat/completions" {
 				g.recordHealth(record)
 			}
@@ -116,6 +143,9 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 			fail(w, record, http.StatusBadRequest, "ai_invalid_request", "Invalid provider, model, or stream field")
 			return
 		}
+	}
+	if value, ok := r.Context().Value(streamContextKey{}).(*bool); ok {
+		*value = stream
 	}
 	if record.Logging != nil && record.Logging.Conversation == "HashOnly" {
 		record.RequestDigest = requestDigest(body)
@@ -198,60 +228,21 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 }
 
 func (g *gateway) resolveEnforced(record *aipolicy.InvocationRecord) {
-	if record.Model == "auto" {
-		record.Model = ""
-	}
-	if record.Model == "" {
-		document := g.policy
-		if record.Provider != "" {
-			document.Providers = nil
-			for _, candidate := range g.policy.Providers {
-				if candidate.Name == record.Provider {
-					document.Providers = []aipolicy.Provider{candidate}
-					break
-				}
-			}
-		}
-		name, model := document.DefaultModel()
-		if record.Provider == "" {
-			record.Provider = name
-		}
-		record.Model = model
-		return
-	}
-	if record.Provider == "" {
-		for _, candidate := range g.policy.Providers {
-			if g.policy.Allows(candidate.Name, record.Model).Allowed {
-				record.Provider = candidate.Name
-				return
-			}
-		}
-	}
+	decideEnforced(g.policy, record)
 }
 
 func (g *gateway) resolveProvider(ctx context.Context, record *aipolicy.InvocationRecord) (provider.Provider, error) {
 	if g.policy.Mode == aipolicy.ModeUnrestricted && record.Provider == "" {
 		record.Provider = g.defaultProvider
 	}
-	var selected provider.Provider
-	var err error
-	if record.Provider != "" {
-		selected, err = g.providers.lookup(ctx, record.Provider)
-	} else {
-		var candidates []provider.Provider
-		candidates, err = g.providers.providers(ctx)
-		if len(candidates) > 0 {
-			selected = candidates[0]
-			record.Provider = selected.Name()
-		}
+	if p := g.providers.configured(record.Provider); p != nil {
+		return decideProvider(g.policy.Mode, g.defaultProvider, g.defaultModel, []provider.Provider{p}, record), nil
 	}
-	if selected != nil && g.policy.Mode == aipolicy.ModeUnrestricted && record.Model == "" {
-		record.Model = g.defaultModel
-		if record.Model == "" {
-			record.Model = selected.DefaultModel()
-		}
+	candidates, err := g.providers.providers(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return selected, err
+	return decideProvider(g.policy.Mode, g.defaultProvider, g.defaultModel, candidates, record), nil
 }
 
 func (g *gateway) proxyStream(w http.ResponseWriter, response *http.Response, observer *responseObserver) {
@@ -410,13 +401,9 @@ func (g *gateway) recordHealth(record aipolicy.InvocationRecord) {
 }
 
 func (g *gateway) checkHealth(ctx context.Context) health.Status {
-	if g.policy.Mode == aipolicy.ModePending {
-		return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonUpstreamDenied, Message: "The Project AI policy is not ready"}
+	if status, blocked := decidePolicyHealth(g.policy); blocked {
+		return status
 	}
-	if g.policy.Mode == aipolicy.ModeEnforced && g.policy.Logging != nil && g.policy.Logging.Conversation == "Full" {
-		return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "Required conversation logging is unavailable"}
-	}
-	// Health never retains caller credentials; Project-link discovery uses the
-	// Gateway workload identity independently of inference authorization.
+	// Health never retains caller credentials.
 	return g.providers.healthStatus(ctx)
 }

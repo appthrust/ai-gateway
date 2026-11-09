@@ -35,9 +35,12 @@ type registry struct {
 const providerHealthWindow = 5 * time.Minute
 
 type providerHealth struct {
-	done     chan struct{}
-	observed time.Time
-	status   health.Status
+	done           chan struct{}
+	observed       time.Time
+	status         health.Status
+	modelsDone     chan struct{}
+	modelsObserved time.Time
+	models         []string
 }
 
 func registryFromEnv(resolver capabilityResolver) *registry {
@@ -63,16 +66,7 @@ func (r *registry) providers(ctx context.Context) ([]provider.Provider, error) {
 			}
 			return nil, err
 		}
-		for _, binding := range bindings {
-			if binding.State != link.StateReady || binding.InternalURL == "" {
-				continue
-			}
-			// Credential-backed names are reserved by the registry. A binding
-			// must not impersonate another adapter's credential/egress boundary.
-			if r.configured(binding.Definition) == nil {
-				result = append(result, provider.NewCapability(binding.Definition, binding.InternalURL, r.client))
-			}
-		}
+		result = r.linkedProviders(bindings)
 	}
 	// Discovery is evidence for Project links, not for static credentials.
 	if len(r.static) == 0 {
@@ -83,6 +77,16 @@ func (r *registry) providers(ctx context.Context) ([]provider.Provider, error) {
 		}
 	}
 	return append(result, r.static...), nil
+}
+
+func (r *registry) linkedProviders(bindings []link.Binding) []provider.Provider {
+	var result []provider.Provider
+	for _, binding := range bindings {
+		if binding.State == link.StateReady && binding.InternalURL != "" && r.configured(binding.Definition) == nil {
+			result = append(result, provider.NewCapability(binding.Definition, binding.InternalURL, r.client))
+		}
+	}
+	return result
 }
 
 func (r *registry) configured(name string) provider.Provider {
@@ -128,16 +132,10 @@ func (r *registry) healthStatus(ctx context.Context) health.Status {
 		return status
 	}
 	if len(r.static) == 0 {
-		first := !r.healthStarted
+		status := decideResolutionHealth(r.resolver != nil, r.healthStarted)
 		r.healthStarted = true
 		r.healthMu.Unlock()
-		if r.resolver == nil {
-			return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No AI provider is configured"}
-		}
-		if first {
-			return health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonNoEvidence, Message: "No recent authenticated provider resolution"}
-		}
-		return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No recent authenticated provider resolution"}
+		return status
 	}
 	if r.healthProbes == nil {
 		r.healthProbes = make(map[string]*providerHealth, len(r.static))
@@ -158,10 +156,7 @@ func (r *registry) healthStatus(ctx context.Context) health.Status {
 	for _, probe := range probes {
 		select {
 		case <-probe.done:
-			if probe.status.State == apphealth.StateServing ||
-				result.State != apphealth.StateServing && probe.status.Reason == apphealth.ReasonUpstreamDenied {
-				result = probe.status
-			}
+			result = decideProbeHealth(result, probe.status)
 		case <-ctx.Done():
 			// The shared probe has its own bounded lifetime; a cancelled health
 			// reader must not cancel it for other readers or poison its cache.

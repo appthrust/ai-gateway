@@ -4,6 +4,10 @@ Contract between `cmd/server` and `web/`. Design authority:
 platform `design/platform/ai-gateway/ui.md`. TypeScript mirror:
 `web/src/api/types.ts` (kept identical by hand; no codegen).
 
+Every authenticated `/v1/*` answer (success or error) carries
+`X-Request-ID: <ring entry id>` so the Playground can find its own record in
+`GET /api/ai-gateway/v1/invocations` exactly.
+
 All routes below require the same authenticated Project-member caller as
 `/v1/*` (`Authorization` bearer attached by the OIDC edge). Errors use the
 gateway envelope `{"error":{"code","message"}}`; `401 ai_unauthorized`,
