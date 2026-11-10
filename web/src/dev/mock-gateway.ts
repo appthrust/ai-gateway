@@ -67,7 +67,6 @@ export function createMockGateway() {
       embeddings: true,
       keys: [
         { slot: 'openai', bound: true, state: 'rejected', observedAt: ago(120_000) },
-        { slot: 'openai-secondary', bound: false, state: 'unchecked', observedAt: null },
       ],
       models: [
         { id: 'gpt-5-mini', allowed: true, default: false, deniedBy: null },
@@ -86,7 +85,6 @@ export function createMockGateway() {
       embeddings: false,
       keys: [
         { slot: 'anthropic', bound: false, state: 'unchecked', observedAt: null },
-        { slot: 'anthropic-secondary', bound: false, state: 'unchecked', observedAt: null },
       ],
       models: [],
     },
@@ -112,8 +110,6 @@ export function createMockGateway() {
       candidates: [
         { kind: 'CredentialSlot', name: 'openai', satisfied: true },
         { kind: 'CredentialSlot', name: 'anthropic', satisfied: false },
-        { kind: 'CredentialSlot', name: 'openai-secondary', satisfied: false },
-        { kind: 'CredentialSlot', name: 'anthropic-secondary', satisfied: false },
         { kind: 'Link', name: 'llm', satisfied: true },
       ],
     },

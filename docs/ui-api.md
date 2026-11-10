@@ -34,8 +34,6 @@ credential, an upstream URL, or a request/response body.
     "candidates": [
       {"kind":"CredentialSlot","name":"openai","satisfied":false},
       {"kind":"CredentialSlot","name":"anthropic","satisfied":false},
-      {"kind":"CredentialSlot","name":"openai-secondary","satisfied":false},
-      {"kind":"CredentialSlot","name":"anthropic-secondary","satisfied":false},
       {"kind":"Link","name":"llm","satisfied":true}
     ]
   },
@@ -105,8 +103,7 @@ credential, an upstream URL, or a request/response body.
   "observedAt":"2026-11-09T09:58:00Z",
   "embeddings":true,
   "keys":[
-    {"slot":"openai","bound":true,"state":"rejected","observedAt":"2026-11-09T09:58:00Z"},
-    {"slot":"openai-secondary","bound":false,"state":"unchecked","observedAt":null}
+    {"slot":"openai","bound":true,"state":"rejected","observedAt":"2026-11-09T09:58:00Z"}
   ],
   "models":[{"id":"gpt-5-mini","allowed":true,"default":false,"deniedBy":null},
             {"id":"gpt-4o","allowed":false,"default":false,"deniedBy":{"provider":"openai","patterns":["gpt-5*"]}}]

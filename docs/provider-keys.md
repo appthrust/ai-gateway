@@ -20,7 +20,9 @@ Dashboard `dashboard/src/features/project-ai-policy/components/project-ai-policy
 
 ## Registration and selection
 
-The existing slots keep their names and environment variables. Optional second slots are `openai-secondary` (`AI_GATEWAY_OPENAI_SECONDARY_API_KEY`) and `anthropic-secondary` (`AI_GATEWAY_ANTHROPIC_SECONDARY_API_KEY`). The registration table supplies display names, provider references and environment names; all keys are read through one loop. Empty values are unbound. There is no key-value mutation API.
+The catalog declares one slot per adapter: `openai` (`AI_GATEWAY_OPENAI_API_KEY`) and `anthropic` (`AI_GATEWAY_ANTHROPIC_API_KEY`). The registration table supplies display names, provider references and environment names; all keys are read through one loop, and the registry, selection, per-key observation and check API already handle several slots per provider. Empty values are unbound. There is no key-value mutation API.
+
+The slot list cannot grow in an app release. The platform admission webhook rejects any change to `ApplicationStackDefinition.spec.components` (`appthrust-operator/pkg/controllers/core/component/admission.go`, "components are immutable"), and every version of an app shares that one `components` block. Release 0.6.0 added `openai-secondary` / `anthropic-secondary` and made catalog projection fail on consuming estates; 0.6.1 restores the original two slots. More than one key per provider is therefore a required platform change.
 
 Policy and inference continue to use provider names, never slot names. Within a provider, prefer a key whose latest check succeeded, then an unchecked key, then a failed key, in registration order. This is deterministic selection, not round-robin or automatic retry: a request is sent once. A subsequent request can use another key after failure evidence. Linked providers remain ahead of static providers for an omitted unrestricted provider. Observations never authorize a withdrawn link.
 
@@ -57,14 +59,14 @@ Health refreshes discovery using the **gateway workload credential** already own
 
 ## Required platform changes
 
-- **Arbitrary user-named/count provider keys**: product must decide limits/naming and expose declaration plus binding in installation configuration. Extend the catalog/installation-to-Component contract (`model/api/core/v1alpha1/component.go:ComponentCredentialSlot`, platform `platform-api/internal/handler/application_stack_marketplace_render.go`, `component_credential_slot.go`, `application_credential.go`), and deliver non-secret registration metadata to the gateway rather than embedding per-Project slot names in an app release. The current two slots per adapter are a bounded catalog choice, not dynamic CRUD.
+- **More than one key per provider, and arbitrary user-named keys**: slots live in `ApplicationStackDefinition.spec.components[].defaultValues.credentialSlots`, which is immutable and shared by all versions, so an app release cannot add one. The platform must either version components per definition version or move slot declaration to installation configuration. Product must decide limits/naming. Extend the catalog/installation-to-Component contract (`model/api/core/v1alpha1/component.go:ComponentCredentialSlot`, platform `platform-api/internal/handler/application_stack_marketplace_render.go`, `component_credential_slot.go`, `application_credential.go`, and the immutability rule in `appthrust-operator/pkg/controllers/core/component/admission.go`), and deliver non-secret registration metadata to the gateway rather than embedding per-Project slot names in an app release.
 - **Project Settings → AI credential management**: extend `dashboard/src/features/project-ai-policy/components/project-ai-policy-tab.tsx` and its API client contracts to list slots and invoke the owning Application credential routes (or a stable installation facade). Do not create another credential store. Retain platform authorization, idempotency and revision rotation.
 - **Reversible disable distinct from unbind**: add an enabled/disabled binding contract to the platform's Application credential model, `application_credential.go` and `appthrust-operator/pkg/controllers/core/applicationbranch/credential_resolver.go`. Today unbind is the available disable operation.
 
 ## Deviations and open product decisions
 
 - The supplied deployed builtin-app credential contract and the current platform checkout's Application/app-installation contracts differ; this repo does not migrate either platform API.
-- Product owner: approve the two-keys-per-provider catalog names/count, versus a future arbitrary-named slot inventory (bounded by the platform's eight-slot Component limit today).
+- Product owner: decide the key naming/count model once the platform can change slots (bounded by the platform's eight-slot Component limit today).
 - Product owner: decide whether to add a reversible disable control and whether Settings → AI should own the credential-management entry point. This implementation points to the existing installation owner instead.
 - No load balancing, per-request key choice, retry, gateway secret storage, release or deployment is introduced. Checks and status are process-local, not durable key audit history.
 
