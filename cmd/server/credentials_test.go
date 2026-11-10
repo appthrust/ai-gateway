@@ -90,6 +90,11 @@ func TestRejectedKeyAndReadyLink(t *testing.T) {
 }
 
 func TestMultipleKeysSelectionAndIndependentChecks(t *testing.T) {
+	// The published catalog declares one slot per adapter; a second slot is
+	// registered here to cover several keys of one provider.
+	declared := credentialSlots
+	t.Cleanup(func() { credentialSlots = declared })
+	credentialSlots = append(append([]credentialSlot{}, declared...), credentialSlot{Name: "openai-secondary", Provider: "OpenAI", Env: "AI_GATEWAY_TEST_OPENAI_SECONDARY"})
 	primary := &inspectFixture{fakeProvider: fakeProvider{name: "openai"}, probeCode: 401}
 	secondary := &inspectFixture{fakeProvider: fakeProvider{name: "openai"}, probeCode: 200}
 	r := &registry{static: []provider.Provider{registerKey(primary, "openai"), registerKey(secondary, "openai-secondary")}}
