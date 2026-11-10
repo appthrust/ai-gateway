@@ -16,6 +16,16 @@ describe('server-sent events', () => {
 describe('gateway client', () => {
   const noReauth = () => false
 
+  test('a per-key check addresses only its encoded provider and slot with no key-value body', async () => {
+    const api = createGatewayApi(async (input, init) => {
+      expect(input).toBe('/api/ai-gateway/v1/providers/openai/keys/openai-secondary/check')
+      expect(init.method).toBe('POST')
+      expect(init.body).toBeUndefined()
+      return Response.json({ name: 'openai', keys: [] })
+    }, noReauth)
+    expect((await api.check('openai', 'openai-secondary')).name).toBe('openai')
+  })
+
   test('a streamed chat yields each chunk and stops at [DONE]', async () => {
     const body = ['data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n', 'data: {"choices":[{"delta":{"content":"lo"}}],"usage":{"prompt_tokens":3}}\n\n', 'data: [DONE]\n\n']
     const fetcher = async (_input: string, init: RequestInit) => {

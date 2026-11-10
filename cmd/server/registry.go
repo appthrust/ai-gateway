@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/appthrust/ai-gateway/cmd/server/internal/provider"
+	"github.com/appthrust/appserver-go/aipolicy"
 	"github.com/appthrust/appserver-go/apphealth"
 	"github.com/appthrust/appserver-go/appserver/contract/chatcompletions"
 	"github.com/appthrust/appserver-go/appserver/health"
@@ -18,18 +18,15 @@ type capabilityResolver interface {
 	ByCapability(context.Context, string, string) ([]link.Binding, error)
 }
 
-// One registry/resolver is constructed per Project. link.Resolver caches the
-// Project's read-model bindings for 60 seconds; credentials are never cached in
-// bindings. No second cache can extend the lifetime of a withdrawn binding.
+// The resolver owns the binding cache. Health retains only observations, never
+// caller credentials or a second routing cache.
 type registry struct {
 	static         []provider.Provider
 	resolver       capabilityResolver
 	client         *http.Client
 	healthMu       sync.Mutex
-	healthObserved time.Time
-	healthResult   health.Status
-	healthStarted  bool
 	healthProbes   map[string]*providerHealth
+	policyDeniedAt time.Time
 }
 
 const providerHealthWindow = 5 * time.Minute
@@ -43,40 +40,19 @@ type providerHealth struct {
 	models         []string
 }
 
-func registryFromEnv(resolver capabilityResolver) *registry {
-	client := provider.NewClient()
-	r := &registry{resolver: resolver, client: client}
-	if key := os.Getenv("AI_GATEWAY_OPENAI_API_KEY"); key != "" {
-		r.static = append(r.static, provider.NewOpenAI(key, client))
-	}
-	if key := os.Getenv("AI_GATEWAY_ANTHROPIC_API_KEY"); key != "" {
-		r.static = append(r.static, provider.NewAnthropic(key, client))
-	}
-	return r
-}
-
 func (r *registry) providers(ctx context.Context) ([]provider.Provider, error) {
 	var result []provider.Provider
 	if r.resolver != nil {
-		// Discovery uses the Gateway workload credential, never caller authority.
 		bindings, err := r.resolver.ByCapability(ctx, "", chatcompletions.Capability)
 		if err != nil {
 			if len(r.static) == 0 {
-				r.observeHealth(health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonDependencyUnavailable, Message: "Provider discovery is unavailable"})
+				return nil, err
 			}
-			return nil, err
-		}
-		result = r.linkedProviders(bindings)
-	}
-	// Discovery is evidence for Project links, not for static credentials.
-	if len(r.static) == 0 {
-		if len(result) == 0 {
-			r.observeHealth(health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No AI provider is Ready"})
 		} else {
-			r.observeHealth(health.Status{State: apphealth.StateServing})
+			result = r.linkedProviders(bindings)
 		}
 	}
-	return append(result, r.static...), nil
+	return append(result, r.selectedStatic()...), nil
 }
 
 func (r *registry) linkedProviders(bindings []link.Binding) []provider.Provider {
@@ -90,7 +66,7 @@ func (r *registry) linkedProviders(bindings []link.Binding) []provider.Provider 
 }
 
 func (r *registry) configured(name string) provider.Provider {
-	for _, p := range r.static {
+	for _, p := range r.selectedStatic() {
 		if p.Name() == name {
 			return p
 		}
@@ -114,61 +90,72 @@ func (r *registry) lookup(ctx context.Context, name string) (provider.Provider, 
 	return nil, nil
 }
 
-func (r *registry) observeHealth(status health.Status) {
+func (r *registry) observeProvider(p provider.Provider, status health.Status) {
 	r.healthMu.Lock()
-	r.healthResult, r.healthObserved = status, time.Now()
-	r.healthStarted = true
-	r.healthMu.Unlock()
+	defer r.healthMu.Unlock()
+	if r.healthProbes == nil {
+		r.healthProbes = make(map[string]*providerHealth)
+	}
+	id := observationID(p)
+	probe := r.healthProbes[id]
+	if probe == nil {
+		probe = &providerHealth{}
+		r.healthProbes[id] = probe
+	}
+	probe.status, probe.observed = status, time.Now()
+}
+
+func (r *registry) observePolicyDenial(denied bool) {
+	r.healthMu.Lock()
+	defer r.healthMu.Unlock()
+	r.policyDeniedAt = time.Time{}
+	if denied {
+		r.policyDeniedAt = time.Now()
+	}
 }
 
 func (r *registry) healthStatus(ctx context.Context) health.Status {
+	return r.healthForPolicy(ctx, aipolicy.Document{Mode: aipolicy.ModeUnrestricted})
+}
+
+func (r *registry) healthForPolicy(ctx context.Context, document aipolicy.Document) health.Status {
 	if r == nil {
 		return health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonNoEvidence}
 	}
 	r.healthMu.Lock()
-	if !r.healthObserved.IsZero() && time.Since(r.healthObserved) <= providerHealthWindow {
-		status := r.healthResult
-		r.healthMu.Unlock()
-		return status
-	}
-	if len(r.static) == 0 {
-		status := decideResolutionHealth(r.resolver != nil, r.healthStarted)
-		r.healthStarted = true
-		r.healthMu.Unlock()
-		return status
-	}
 	if r.healthProbes == nil {
 		r.healthProbes = make(map[string]*providerHealth, len(r.static))
 	}
-	probes := make([]*providerHealth, 0, len(r.static))
+	var pending []chan struct{}
 	for _, p := range r.static {
-		probe := r.healthProbes[p.Name()]
-		if probe == nil || !probe.observed.IsZero() && time.Since(probe.observed) > providerHealthWindow {
-			probe = &providerHealth{done: make(chan struct{})}
-			r.healthProbes[p.Name()] = probe
+		id := observationID(p)
+		probe := r.healthProbes[id]
+		if probe == nil {
+			probe = &providerHealth{}
+			r.healthProbes[id] = probe
+		}
+		if probe.done == nil && (probe.observed.IsZero() || time.Since(probe.observed) > providerHealthWindow) {
+			probe.done = make(chan struct{})
 			go r.probeProvider(p, probe)
 		}
-		probes = append(probes, probe)
-	}
-	r.healthMu.Unlock()
-
-	result := providerHealthStatus(0, nil)
-	for _, probe := range probes {
-		select {
-		case <-probe.done:
-			result = decideProbeHealth(result, probe.status)
-		case <-ctx.Done():
-			// The shared probe has its own bounded lifetime; a cancelled health
-			// reader must not cancel it for other readers or poison its cache.
+		if probe.done != nil {
+			pending = append(pending, probe.done)
 		}
 	}
-	r.healthMu.Lock()
-	defer r.healthMu.Unlock()
-	// Traffic observed while checks were in flight is stronger evidence.
-	if !r.healthObserved.IsZero() && time.Since(r.healthObserved) <= providerHealthWindow {
-		return r.healthResult
+	r.healthMu.Unlock()
+	// Discovery has workload authority only. Drop all caller context values.
+	discoveryCtx, cancel := context.WithTimeout(context.Background(), health.Budget/2)
+	defer cancel()
+	snapshot := r.snapshot(discoveryCtx)
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
 	}
-	return result
+	r.refreshObservations(&snapshot)
+	v := decideHealth(document, snapshot, time.Now())
+	return health.Status{State: v.State, Reason: v.Reason, Message: v.Message}
 }
 
 func (r *registry) probeProvider(p provider.Provider, probe *providerHealth) {
@@ -176,12 +163,16 @@ func (r *registry) probeProvider(p provider.Provider, probe *providerHealth) {
 	// keep one unavailable provider from hiding a reachable alternative.
 	ctx, cancel := context.WithTimeout(context.Background(), health.Budget/2)
 	defer cancel()
+	started := time.Now()
 	code, err := p.Probe(ctx)
 	r.healthMu.Lock()
 	defer r.healthMu.Unlock()
-	probe.status = providerHealthStatus(code, err)
-	probe.observed = time.Now()
+	if !probe.observed.After(started) {
+		probe.status = providerHealthStatus(code, err)
+		probe.observed = time.Now()
+	}
 	close(probe.done)
+	probe.done = nil
 }
 
 func providerHealthStatus(code int, err error) health.Status {

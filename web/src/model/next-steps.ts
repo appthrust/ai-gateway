@@ -39,7 +39,9 @@ export function nextStepRows(steps: readonly NextStep[], links: DashboardLinks):
       case 'BindPolicy':
         return row('aiGateway.nextStep.bindPolicy', {}, 'settings')
       case 'FixProvider':
-        return row('aiGateway.nextStep.fixProvider', { provider: step.provider }, 'installation')
+        return step.slot
+          ? row('aiGateway.keys.fix', { provider: step.provider, slot: step.slot }, 'installation')
+          : row('aiGateway.nextStep.fixProvider', { provider: step.provider }, 'installation')
       case 'ContactAdmin':
         return row('aiGateway.nextStep.contactAdmin', { reason: step.reason }, 'settings')
     }

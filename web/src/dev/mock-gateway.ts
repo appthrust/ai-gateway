@@ -36,6 +36,7 @@ export function createMockGateway() {
       message: '',
       observedAt: ago(40_000),
       embeddings: true,
+      keys: [],
       models: [
         { id: 'gemma3:4b', allowed: true, default: true, deniedBy: null },
         { id: 'gemma3:12b', allowed: true, default: false, deniedBy: null },
@@ -52,6 +53,7 @@ export function createMockGateway() {
       message: 'Provider answered 503',
       observedAt: ago(90_000),
       embeddings: false,
+      keys: [],
       models: [],
     },
     {
@@ -63,6 +65,10 @@ export function createMockGateway() {
       message: 'Provider rejected the configured credential',
       observedAt: ago(120_000),
       embeddings: true,
+      keys: [
+        { slot: 'openai', bound: true, state: 'rejected', observedAt: ago(120_000) },
+        { slot: 'openai-secondary', bound: false, state: 'unchecked', observedAt: null },
+      ],
       models: [
         { id: 'gpt-5-mini', allowed: true, default: false, deniedBy: null },
         { id: 'text-embedding-3-small', allowed: true, default: false, deniedBy: null },
@@ -78,6 +84,10 @@ export function createMockGateway() {
       message: '',
       observedAt: null,
       embeddings: false,
+      keys: [
+        { slot: 'anthropic', bound: false, state: 'unchecked', observedAt: null },
+        { slot: 'anthropic-secondary', bound: false, state: 'unchecked', observedAt: null },
+      ],
       models: [],
     },
     {
@@ -89,6 +99,7 @@ export function createMockGateway() {
       message: '',
       observedAt: null,
       embeddings: false,
+      keys: [],
       models: [],
     },
   ]
@@ -99,17 +110,19 @@ export function createMockGateway() {
     configured: {
       satisfied: true,
       candidates: [
-        { kind: 'CredentialSlot', name: 'openai', satisfied: false },
+        { kind: 'CredentialSlot', name: 'openai', satisfied: true },
         { kind: 'CredentialSlot', name: 'anthropic', satisfied: false },
+        { kind: 'CredentialSlot', name: 'openai-secondary', satisfied: false },
+        { kind: 'CredentialSlot', name: 'anthropic-secondary', satisfied: false },
         { kind: 'Link', name: 'llm', satisfied: true },
       ],
     },
-    health: { state: 'Degraded', reason: 'UpstreamDenied', message: 'Provider openai rejected the configured credential; llm is serving.', observedAt: ago(40_000) },
+    health: { state: 'Serving', reason: '', message: '', observedAt: ago(40_000) },
     defaultRoute: { provider: 'llm', model: 'gemma3:4b', source: 'Policy' },
     endpoints: { public: `${mockConfig.publicUrl}/v1`, internal: `http://ai-gateway-web.${PROJECT}.svc/v1` },
     release: { version: '0.3.0', artifactDigest: digest('release-0.3.0') },
     logging: { conversation: 'HashOnly', toolCalls: 'Off', retention: '90d' },
-    nextSteps: [{ kind: 'FixProvider', provider: 'openai' }, { kind: 'BindCredential', slot: 'anthropic' }, { kind: 'InstallApp', definitionId: 'inference' }],
+    nextSteps: [{ kind: 'FixProvider', provider: 'openai', slot: 'openai' }],
   }
   const policyRef = { name: policy.name, uid: policy.uid }
   const ring: InvocationEntry[] = [
@@ -271,15 +284,19 @@ export function createMockGateway() {
     return json({ object: 'list', data, ...(errors.length ? { errors } : {}) })
   }
 
-  function check(name: string): Response {
+  function check(name: string, slot?: string): Response {
     const provider = providers.find((candidate) => candidate.name === name)
     if (!provider) return fail(404, 'ai_provider_unknown', 'Unknown provider')
-    if (provider.kind === 'InProjectApp') return json(provider)
-    const last = lastCheck.get(name) ?? (provider.observedAt ? Date.parse(provider.observedAt) : 0)
-    const wait = CHECK_INTERVAL_MS - (Date.now() - last)
-    if (wait > 0) return fail(429, 'ai_check_rate_limited', 'The last check is younger than 30 seconds', { retryAfterSeconds: Math.ceil(wait / 1000) })
-    lastCheck.set(name, Date.now())
-    provider.observedAt = new Date().toISOString()
+    const keys = provider.keys.filter((key) => key.bound && (!slot || key.slot === slot))
+    if (slot && keys.length === 0) return fail(404, 'ai_key_unknown', 'The AI provider key is unknown or unbound')
+    for (const key of keys) {
+      const last = lastCheck.get(key.slot) ?? (key.observedAt ? Date.parse(key.observedAt) : 0)
+      const wait = CHECK_INTERVAL_MS - (Date.now() - last)
+      if (wait > 0) return fail(429, 'ai_check_rate_limited', 'The last check is younger than 30 seconds', { retryAfterSeconds: Math.ceil(wait / 1000) })
+      lastCheck.set(key.slot, Date.now())
+      key.observedAt = new Date().toISOString()
+      provider.observedAt = key.observedAt
+    }
     return json(provider)
   }
 
@@ -305,8 +322,8 @@ export function createMockGateway() {
     if (method === 'GET' && path === '/config') return json(mockConfig)
     if (method === 'GET' && path === '/api/ai-gateway/v1/status') return json(status)
     if (method === 'GET' && path === '/api/ai-gateway/v1/providers') return json({ items: providers })
-    const checkMatch = /^\/api\/ai-gateway\/v1\/providers\/([^/]+)\/check$/.exec(path)
-    if (method === 'POST' && checkMatch) return check(decodeURIComponent(checkMatch[1]!))
+    const checkMatch = /^\/api\/ai-gateway\/v1\/providers\/([^/]+)(?:\/keys\/([^/]+))?\/check$/.exec(path)
+    if (method === 'POST' && checkMatch) return check(decodeURIComponent(checkMatch[1]!), checkMatch[2] ? decodeURIComponent(checkMatch[2]) : undefined)
     if (method === 'GET' && path === '/api/ai-gateway/v1/invocations') return invocations(url)
     if (method === 'GET' && path === '/v1/models') return models()
     if (method === 'POST' && path === '/v1/chat/completions') return chat(request)

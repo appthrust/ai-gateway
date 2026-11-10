@@ -44,8 +44,8 @@ export const overviewMessages = defineDashboardMessages({
   'aiGateway.overview.configured.bindCredential': { defaultMessage: 'Set the {name} API key', translations: { ja: '{name} の API キーを設定する' } },
   'aiGateway.overview.health.Serving': { defaultMessage: 'The gateway answers requests normally.', translations: { ja: 'リクエストに正常に応答しています。' } },
   'aiGateway.overview.health.Degraded': {
-    defaultMessage: 'Some providers are failing; requests to the others still work.',
-    translations: { ja: '一部のプロバイダーで問題が起きています。ほかのプロバイダーへのリクエストは使えます。' },
+    defaultMessage: 'A recent request was denied by the AI policy. Provider-key findings are shown separately.',
+    translations: { ja: '直近のリクエストが AI ポリシーで拒否されました。API キーの問題は個別に表示します。' },
   },
   'aiGateway.overview.health.Failing': { defaultMessage: 'Requests cannot be served right now.', translations: { ja: 'いまはリクエストに応答できません。' } },
   'aiGateway.overview.health.Unknown': { defaultMessage: 'The first health check has not run yet.', translations: { ja: '最初のヘルスチェックがまだ終わっていません。' } },

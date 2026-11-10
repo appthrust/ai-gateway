@@ -13,7 +13,6 @@ import (
 	"github.com/appthrust/ai-gateway/cmd/server/internal/provider"
 	"github.com/appthrust/ai-gateway/cmd/server/internal/sse"
 	"github.com/appthrust/appserver-go/aipolicy"
-	"github.com/appthrust/appserver-go/apphealth"
 	"github.com/appthrust/appserver-go/appserver/health"
 	"github.com/appthrust/appserver-go/appserver/identity"
 	"github.com/appthrust/appserver-go/appserver/releaseidentity"
@@ -49,6 +48,7 @@ func (g *gateway) handler() http.Handler {
 	mux.HandleFunc("GET /api/ai-gateway/v1/status", g.authenticatedRead(g.status))
 	mux.HandleFunc("GET /api/ai-gateway/v1/providers", g.authenticatedRead(g.providerViews))
 	mux.HandleFunc("POST /api/ai-gateway/v1/providers/{name}/check", g.authenticatedRead(g.checkProvider))
+	mux.HandleFunc("POST /api/ai-gateway/v1/providers/{name}/keys/{slot}/check", g.authenticatedRead(g.checkProvider))
 	mux.HandleFunc("GET /api/ai-gateway/v1/invocations", g.authenticatedRead(g.invocations))
 	if g.launcher != nil {
 		mux.Handle("GET /launcher", g.launcher)
@@ -93,8 +93,12 @@ func (g *gateway) authenticated(next invocationHandler) http.HandlerFunc {
 			record.DurationMs = time.Since(started).Milliseconds()
 			g.invocationsRing.finish(id, record, stream)
 			g.recorder.enqueue(bearer, record, invocationDelivery{id: id, report: g.invocationsRing.report})
-			if r.URL.Path == "/v1/chat/completions" {
-				g.recordHealth(record)
+			if route == "chat" {
+				switch record.Reason {
+				case "ai_invalid_request", "ai_request_too_large", "ai_unsupported", "ai_response_interrupted":
+				default:
+					g.providers.observePolicyDenial(record.Reason == "ai_model_denied")
+				}
 			}
 		}()
 		switch {
@@ -194,6 +198,15 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 		response, err = embedder.Embeddings(r.Context(), in)
 	} else {
 		response, err = selected.ChatCompletions(r.Context(), in, stream)
+	}
+	if r.URL.Path == "/v1/chat/completions" {
+		code := 0
+		if response != nil {
+			code = response.StatusCode
+		}
+		if err != nil || code == http.StatusOK || code == http.StatusUnauthorized || code == http.StatusForbidden || code >= 500 {
+			g.providers.observeProvider(selected, providerHealthStatus(code, err))
+		}
 	}
 	if err != nil {
 		if response != nil && response.Body != nil {
@@ -383,27 +396,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (g *gateway) recordHealth(record aipolicy.InvocationRecord) {
-	status := health.Status{State: apphealth.StateServing}
-	switch record.Reason {
-	case "ai_unauthorized", "ai_invalid_request", "ai_request_too_large", "ai_unsupported", "ai_response_interrupted":
-		return
-	case "ai_model_denied", "ai_policy_pending":
-		status = health.Status{State: apphealth.StateDegraded, Reason: apphealth.ReasonUpstreamDenied}
-	case "ai_provider_unavailable", "ai_policy_logging_unavailable":
-		status = health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable}
-	default:
-		if record.Outcome != aipolicy.OutcomeAllowed {
-			status = providerHealthStatus(0, nil)
-		}
-	}
-	g.providers.observeHealth(status)
-}
-
 func (g *gateway) checkHealth(ctx context.Context) health.Status {
 	if status, blocked := decidePolicyHealth(g.policy); blocked {
 		return status
 	}
 	// Health never retains caller credentials.
-	return g.providers.healthStatus(ctx)
+	return g.providers.healthForPolicy(ctx, g.policy)
 }

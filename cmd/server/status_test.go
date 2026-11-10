@@ -15,7 +15,6 @@ import (
 	"github.com/appthrust/ai-gateway/cmd/server/internal/provider"
 	"github.com/appthrust/appserver-go/aipolicy"
 	"github.com/appthrust/appserver-go/apphealth"
-	"github.com/appthrust/appserver-go/appserver/health"
 	"github.com/appthrust/appserver-go/appserver/link"
 	"github.com/stretchr/testify/require"
 )
@@ -39,15 +38,28 @@ func TestStatusDecisionTable(t *testing.T) {
 		{name: "empty unrestricted", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, state: "Failing", steps: []nextStep{{Kind: "BindCredential", Slot: "openai"}, {Kind: "BindCredential", Slot: "anthropic"}, {Kind: "InstallApp", DefinitionID: "inference"}, {Kind: "BindPolicy"}}},
 		{name: "credential serving", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, snapshot: providerSnapshot{available: []provider.Provider{openai}, static: []provider.Provider{openai}, observations: map[string]providerObservation{"openai": {observed: now, status: providerHealthStatus(200, nil)}}}, bound: true, configured: true, state: "Serving", route: &defaultRoute{Provider: "openai", Model: "adapter-default", Source: "Credential"}, steps: []nextStep{}},
 		{name: "credential override", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, snapshot: providerSnapshot{available: []provider.Provider{openai}, static: []provider.Provider{openai}}, bound: true, configured: true, defaultProvider: "openai", defaultModel: "override", state: "Unknown", route: &defaultRoute{Provider: "openai", Model: "override", Source: "EnvOverride"}, steps: []nextStep{{Kind: "BindPolicy"}}},
-		{name: "policy capability", document: policy, snapshot: providerSnapshot{available: []provider.Provider{capability}, bindings: []link.Binding{{Definition: "llm", State: link.StateReady}}, healthObserved: now, healthResult: health.Status{State: "Serving"}}, configured: true, state: "Serving", route: &defaultRoute{Provider: "llm", Model: "gemma", Source: "Policy"}, steps: []nextStep{}},
-		{name: "capability default is omitted upstream", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, snapshot: providerSnapshot{available: []provider.Provider{capability}, bindings: []link.Binding{{Definition: "llm", State: link.StateReady}}, healthObserved: now, healthResult: health.Status{State: "Serving"}}, configured: true, state: "Serving", route: &defaultRoute{Provider: "llm", Source: "Capability"}, steps: []nextStep{}},
+		{name: "policy capability", document: policy, snapshot: providerSnapshot{available: []provider.Provider{capability}, bindings: []link.Binding{{Definition: "llm", State: link.StateReady, InternalURL: "http://llm"}}}, configured: true, state: "Serving", route: &defaultRoute{Provider: "llm", Model: "gemma", Source: "Policy"}, steps: []nextStep{}},
+		{name: "capability default is omitted upstream", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, snapshot: providerSnapshot{available: []provider.Provider{capability}, bindings: []link.Binding{{Definition: "llm", State: link.StateReady, InternalURL: "http://llm"}}}, configured: true, state: "Serving", route: &defaultRoute{Provider: "llm", Source: "Capability"}, steps: []nextStep{}},
 		{name: "pending with credentials", document: aipolicy.Document{Mode: aipolicy.ModePending}, snapshot: providerSnapshot{available: []provider.Provider{openai}, static: []provider.Provider{openai}}, bound: true, configured: true, state: "Failing", steps: []nextStep{{Kind: "ContactAdmin", Reason: "ai_policy_pending"}}},
 		{name: "full logging", document: aipolicy.Document{Mode: aipolicy.ModeEnforced, Logging: &aipolicy.Logging{Conversation: "Full"}}, bound: true, configured: true, state: "Failing", steps: []nextStep{{Kind: "ContactAdmin", Reason: "ai_policy_logging_unavailable"}}},
 		{name: "missing policy provider", document: policy, state: "Failing", steps: []nextStep{{Kind: "BindCredential", Slot: "openai"}, {Kind: "BindCredential", Slot: "anthropic"}, {Kind: "InstallApp", DefinitionID: "llm"}}},
 		{name: "denied credential", document: aipolicy.Document{Mode: aipolicy.ModeUnrestricted}, snapshot: providerSnapshot{available: []provider.Provider{openai}, static: []provider.Provider{openai}, observations: map[string]providerObservation{"openai": {observed: now, status: providerHealthStatus(401, nil)}}}, bound: true, configured: true, state: "Failing", route: &defaultRoute{Provider: "openai", Model: "adapter-default", Source: "Credential"}, steps: []nextStep{{Kind: "FixProvider", Provider: "openai"}, {Kind: "BindPolicy"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			configured := decideConfigured(tc.bound, false, tc.snapshot.bindings)
+			if tc.bound && len(tc.snapshot.static) == 0 {
+				tc.snapshot.static = []provider.Provider{openai}
+			}
+			configured := decideConfigured(tc.snapshot)
+			if !tc.configured {
+				steps := append([]nextStep{}, tc.steps[:2]...)
+				steps = append(steps, nextStep{Kind: "BindCredential", Slot: "openai-secondary"}, nextStep{Kind: "BindCredential", Slot: "anthropic-secondary"})
+				tc.steps = append(steps, tc.steps[2:]...)
+			}
+			for i := range tc.steps {
+				if tc.steps[i].Kind == "FixProvider" {
+					tc.steps[i].Slot = tc.steps[i].Provider
+				}
+			}
 			health := decideHealth(tc.document, tc.snapshot, now)
 			route := decideDefaultRoute(tc.document, tc.snapshot, tc.defaultProvider, tc.defaultModel)
 			require.Equal(t, tc.configured, configured.Satisfied)
@@ -195,7 +207,6 @@ func TestStatusProvidersNeverSerializeUpstreamSecrets(t *testing.T) {
 			require.Contains(t, w.Body.String(), `"id":"good","allowed":true,"default":true`)
 		}
 	}
-	require.True(t, g.providers.healthObserved.IsZero())
 	require.Zero(t, g.invocationsRing.count)
 }
 

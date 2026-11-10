@@ -26,14 +26,11 @@ type providerSnapshot struct {
 	static          []provider.Provider
 	observations    map[string]providerObservation
 	discoveryFailed bool
-	healthResult    health.Status
-	healthObserved  time.Time
-	healthStarted   bool
 	hasResolver     bool
+	policyDeniedAt  time.Time
 }
 
-// UI discovery deliberately does not call providers(): observing the operational
-// surface is not authenticated inference traffic and must not overwrite health.
+// Discovery is always workload-authorized, including UI and health reads.
 func (r *registry) snapshot(ctx context.Context) providerSnapshot {
 	s := providerSnapshot{static: r.static, hasResolver: r.resolver != nil}
 	if r.resolver != nil {
@@ -44,15 +41,20 @@ func (r *registry) snapshot(ctx context.Context) providerSnapshot {
 	if !s.discoveryFailed {
 		s.available = r.linkedProviders(s.bindings)
 	}
-	s.available = append(s.available, r.static...)
 	r.healthMu.Lock()
-	defer r.healthMu.Unlock()
-	s.healthResult, s.healthObserved, s.healthStarted = r.healthResult, r.healthObserved, r.healthStarted
-	s.observations = make(map[string]providerObservation, len(r.healthProbes))
-	for name, p := range r.healthProbes {
-		s.observations[name] = providerObservation{status: p.status, observed: p.observed, models: p.models}
-	}
+	s.observations = r.observationsLocked()
+	s.policyDeniedAt = r.policyDeniedAt
+	r.healthMu.Unlock()
+	s.available = append(s.available, selectStatic(r.static, s.observations)...)
 	return s
+}
+
+func (r *registry) observationsLocked() map[string]providerObservation {
+	observations := make(map[string]providerObservation, len(r.healthProbes))
+	for name, p := range r.healthProbes {
+		observations[name] = providerObservation{status: p.status, observed: p.observed, models: p.models}
+	}
+	return observations
 }
 
 type providerSource struct {
@@ -74,16 +76,24 @@ type modelView struct {
 	DeniedBy *modelDenial `json:"deniedBy"`
 }
 
+type CredentialKeyView struct {
+	Slot       string     `json:"slot"`
+	Bound      bool       `json:"bound"`
+	State      string     `json:"state"`
+	ObservedAt *time.Time `json:"observedAt"`
+}
+
 type ProviderView struct {
-	Name       string         `json:"name"`
-	Kind       string         `json:"kind"`
-	Source     providerSource `json:"source"`
-	State      string         `json:"state"`
-	Reason     string         `json:"reason"`
-	Message    string         `json:"message"`
-	ObservedAt *time.Time     `json:"observedAt"`
-	Embeddings bool           `json:"embeddings"`
-	Models     []modelView    `json:"models"`
+	Name       string              `json:"name"`
+	Kind       string              `json:"kind"`
+	Source     providerSource      `json:"source"`
+	State      string              `json:"state"`
+	Reason     string              `json:"reason"`
+	Message    string              `json:"message"`
+	ObservedAt *time.Time          `json:"observedAt"`
+	Embeddings bool                `json:"embeddings"`
+	Models     []modelView         `json:"models"`
+	Keys       []CredentialKeyView `json:"keys"`
 }
 
 func providerInPolicy(document aipolicy.Document, name string) bool {
@@ -108,8 +118,8 @@ func decideProviderState(document aipolicy.Document, name string, available, cre
 	if !credential {
 		return "Serving", "", ""
 	}
-	if observation.observed.IsZero() || now.Sub(observation.observed) > providerHealthWindow {
-		return "Unknown", apphealth.ReasonNoEvidence, "No recent provider check"
+	if observation.observed.IsZero() {
+		return "Unknown", apphealth.ReasonNoEvidence, "No provider check"
 	}
 	if observation.status.State == apphealth.StateServing {
 		return "Serving", "", ""
@@ -141,10 +151,32 @@ func decideModel(document aipolicy.Document, name, model string, route *defaultR
 	return v
 }
 
+func decideKey(slot string, p provider.Provider, observations map[string]providerObservation) CredentialKeyView {
+	v := CredentialKeyView{Slot: slot, Bound: p != nil, State: "unchecked"}
+	if p == nil {
+		return v
+	}
+	o := observations[observationID(p)]
+	if o.observed.IsZero() {
+		return v
+	}
+	at := o.observed.UTC()
+	v.ObservedAt = &at
+	switch {
+	case o.status.State == apphealth.StateServing:
+		v.State = "usable"
+	case o.status.Reason == apphealth.ReasonUpstreamDenied:
+		v.State = "rejected"
+	default:
+		v.State = "unreachable"
+	}
+	return v
+}
+
 func decideProviders(document aipolicy.Document, snapshot providerSnapshot, route *defaultRoute, now time.Time) []ProviderView {
-	items := make([]ProviderView, 0, len(snapshot.available)+2)
+	items := make([]ProviderView, 0, len(snapshot.available)+len(providerRegistrations))
 	seen := make(map[string]bool)
-	add := func(name string) {
+	add := func(name string, registration *providerRegistration) {
 		if seen[name] {
 			return
 		}
@@ -156,14 +188,26 @@ func decideProviders(document aipolicy.Document, snapshot providerSnapshot, rout
 				break
 			}
 		}
-		credential := name == "openai" || name == "anthropic"
-		v := ProviderView{Name: name, Kind: "InProjectApp", Models: []modelView{}}
-		if credential {
+		v := ProviderView{Name: name, Kind: "InProjectApp", Models: []modelView{}, Keys: []CredentialKeyView{}}
+		if registration != nil {
 			bound := p != nil
 			v.Source = providerSource{CredentialSlot: name, Bound: &bound}
-			v.Kind = "OpenAI"
-			if name == "anthropic" {
-				v.Kind = "Anthropic"
+			if p != nil {
+				v.Source.CredentialSlot = observationID(p)
+			}
+			v.Kind = registration.kind
+			for _, slot := range credentialSlots {
+				if slot.Provider != registration.kind {
+					continue
+				}
+				var key provider.Provider
+				for _, candidate := range snapshot.static {
+					if observationID(candidate) == slot.Name {
+						key = candidate
+						break
+					}
+				}
+				v.Keys = append(v.Keys, decideKey(slot.Name, key, snapshot.observations))
 			}
 		} else {
 			v.Source = providerSource{Link: name, LinkState: string(link.StateAbsent)}
@@ -174,8 +218,12 @@ func decideProviders(document aipolicy.Document, snapshot providerSnapshot, rout
 				}
 			}
 		}
-		observation := snapshot.observations[name]
-		v.State, v.Reason, v.Message = decideProviderState(document, name, p != nil, credential, observation, now)
+		id := name
+		if p != nil {
+			id = observationID(p)
+		}
+		observation := snapshot.observations[id]
+		v.State, v.Reason, v.Message = decideProviderState(document, name, p != nil, registration != nil, observation, now)
 		if !observation.observed.IsZero() {
 			at := observation.observed.UTC()
 			v.ObservedAt = &at
@@ -189,14 +237,19 @@ func decideProviders(document aipolicy.Document, snapshot providerSnapshot, rout
 		items = append(items, v)
 	}
 	for _, p := range snapshot.available {
-		if p.Name() != "openai" && p.Name() != "anthropic" {
-			add(p.Name())
+		static := false
+		for i := range providerRegistrations {
+			static = static || providerRegistrations[i].name == p.Name()
+		}
+		if !static {
+			add(p.Name(), nil)
 		}
 	}
-	add("openai")
-	add("anthropic")
+	for i := range providerRegistrations {
+		add(providerRegistrations[i].name, &providerRegistrations[i])
+	}
 	for _, p := range document.Providers {
-		add(p.Name)
+		add(p.Name, nil)
 	}
 	return items
 }
@@ -208,21 +261,25 @@ func (r *registry) inspectProvider(ctx context.Context, p provider.Provider, for
 	if r.healthProbes == nil {
 		r.healthProbes = make(map[string]*providerHealth)
 	}
-	probe := r.healthProbes[p.Name()]
+	id := observationID(p)
+	probe := r.healthProbes[id]
 	if force && probe != nil && !probe.observed.IsZero() && time.Since(probe.observed) < 30*time.Second {
 		retry := int((30*time.Second - time.Since(probe.observed) + time.Second - 1) / time.Second)
 		r.healthMu.Unlock()
 		return retry
 	}
-	if probe == nil || static && !probe.observed.IsZero() && (force || time.Since(probe.observed) > providerHealthWindow) {
+	if probe == nil {
 		probe = &providerHealth{}
-		r.healthProbes[p.Name()] = probe
+		r.healthProbes[id] = probe
 	}
-	if static && probe.done == nil {
+	if static && probe.done == nil && (probe.observed.IsZero() || force || time.Since(probe.observed) > providerHealthWindow) {
 		probe.done = make(chan struct{})
 		go r.probeProvider(p, probe)
+		if force {
+			probe.modelsObserved = time.Time{}
+		}
 	}
-	if probe.modelsDone == nil || !probe.modelsObserved.IsZero() && time.Since(probe.modelsObserved) > providerHealthWindow {
+	if probe.modelsDone == nil && (probe.modelsObserved.IsZero() || time.Since(probe.modelsObserved) > providerHealthWindow) {
 		probe.modelsDone = make(chan struct{})
 		go r.listProviderModels(p, probe, probe.modelsDone)
 	}
@@ -235,9 +292,11 @@ func (r *registry) inspectProvider(ctx context.Context, p provider.Provider, for
 			return 0
 		}
 	}
-	select {
-	case <-modelsDone:
-	case <-ctx.Done():
+	if modelsDone != nil {
+		select {
+		case <-modelsDone:
+		case <-ctx.Done():
+		}
 	}
 	return 0
 }
@@ -258,6 +317,7 @@ func (r *registry) listProviderModels(p provider.Provider, probe *providerHealth
 	r.healthMu.Lock()
 	probe.models, probe.modelsObserved = models, time.Now()
 	close(done)
+	probe.modelsDone = nil
 	r.healthMu.Unlock()
 }
 
@@ -266,7 +326,7 @@ func (g *gateway) providerViews(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	snapshot := g.providers.snapshot(ctx)
 	var pending []chan struct{}
-	for _, p := range snapshot.available {
+	for _, p := range append(snapshot.available, snapshot.static...) {
 		done := make(chan struct{})
 		pending = append(pending, done)
 		go func() {
@@ -286,28 +346,41 @@ func (g *gateway) providerViews(w http.ResponseWriter, r *http.Request) {
 func (r *registry) refreshObservations(snapshot *providerSnapshot) {
 	r.healthMu.Lock()
 	defer r.healthMu.Unlock()
-	for name, p := range r.healthProbes {
-		snapshot.observations[name] = providerObservation{status: p.status, observed: p.observed, models: p.models}
+	snapshot.observations = r.observationsLocked()
+	snapshot.policyDeniedAt = r.policyDeniedAt
+	var linked []provider.Provider
+	for _, p := range snapshot.available {
+		isStatic := false
+		for _, key := range snapshot.static {
+			isStatic = isStatic || p.Name() == key.Name()
+		}
+		if !isStatic {
+			linked = append(linked, p)
+		}
 	}
+	snapshot.available = append(linked, selectStatic(snapshot.static, snapshot.observations)...)
 }
 
 func (g *gateway) checkProvider(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	snapshot := g.providers.snapshot(ctx)
-	name := r.PathValue("name")
-	for _, p := range snapshot.available {
-		if p.Name() != name {
+	name, slot := r.PathValue("name"), r.PathValue("slot")
+	found := slot == ""
+	for _, p := range snapshot.static {
+		if p.Name() != name || slot != "" && observationID(p) != slot {
 			continue
 		}
-		if g.providers.configured(name) != nil {
-			if retry := g.providers.inspectProvider(ctx, p, true, true); retry > 0 {
-				w.Header().Set("Retry-After", strconv.Itoa(retry))
-				writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": map[string]any{"code": "ai_check_rate_limited", "message": "Provider was checked recently", "retryAfterSeconds": retry}})
-				return
-			}
+		found = true
+		if retry := g.providers.inspectProvider(ctx, p, true, true); retry > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": map[string]any{"code": "ai_check_rate_limited", "message": "Provider was checked recently", "retryAfterSeconds": retry}})
+			return
 		}
-		break
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "ai_key_unknown", "The AI provider key is unknown or unbound")
+		return
 	}
 	g.providers.refreshObservations(&snapshot)
 	for _, item := range decideProviders(g.policy, snapshot, decideDefaultRoute(g.policy, snapshot, g.defaultProvider, g.defaultModel), time.Now()) {
