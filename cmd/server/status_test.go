@@ -50,11 +50,6 @@ func TestStatusDecisionTable(t *testing.T) {
 				tc.snapshot.static = []provider.Provider{openai}
 			}
 			configured := decideConfigured(tc.snapshot)
-			if !tc.configured {
-				steps := append([]nextStep{}, tc.steps[:2]...)
-				steps = append(steps, nextStep{Kind: "BindCredential", Slot: "openai-secondary"}, nextStep{Kind: "BindCredential", Slot: "anthropic-secondary"})
-				tc.steps = append(steps, tc.steps[2:]...)
-			}
 			for i := range tc.steps {
 				if tc.steps[i].Kind == "FixProvider" {
 					tc.steps[i].Slot = tc.steps[i].Provider

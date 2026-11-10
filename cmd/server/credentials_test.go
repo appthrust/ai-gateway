@@ -113,18 +113,14 @@ func TestMultipleKeysSelectionAndIndependentChecks(t *testing.T) {
 	require.Equal(t, apphealth.StateFailing, r.healthStatus(context.Background()).State)
 }
 
-func TestCredentialRegistrationConsumesMultipleEnvironmentSlots(t *testing.T) {
-	for _, slot := range credentialSlots {
-		t.Setenv(slot.Env, "")
-	}
-	t.Setenv("AI_GATEWAY_OPENAI_API_KEY", "test-primary")
-	t.Setenv("AI_GATEWAY_OPENAI_SECONDARY_API_KEY", "test-secondary")
+func TestCredentialRegistrationConsumesEveryBoundSlot(t *testing.T) {
+	t.Setenv("AI_GATEWAY_OPENAI_API_KEY", "test-openai")
+	t.Setenv("AI_GATEWAY_ANTHROPIC_API_KEY", "test-anthropic")
 	r := registryFromEnv(nil)
 	require.Len(t, r.static, 2)
-	require.Equal(t, "openai", r.static[0].Name())
-	require.Equal(t, "openai", r.static[1].Name())
-	require.Equal(t, "openai-secondary", observationID(r.static[1]))
-	_, supportsEmbeddings := r.static[1].(provider.Embedder)
+	require.Equal(t, "openai", observationID(r.static[0]))
+	require.Equal(t, "anthropic", observationID(r.static[1]))
+	_, supportsEmbeddings := r.static[0].(provider.Embedder)
 	require.True(t, supportsEmbeddings)
 }
 

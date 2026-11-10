@@ -27,11 +27,11 @@ type credentialSlot struct {
 
 // Catalog credentialSlots are the published projection of this registration table.
 // TestCatalogCredentialRegistrations prevents the consumer and catalog drifting.
+// The platform treats ApplicationStackDefinition components as immutable, so the
+// slot list cannot change in an app release; see docs/provider-keys.md.
 var credentialSlots = []credentialSlot{
 	{Name: "openai", DisplayName: "OpenAI API key", Provider: "OpenAI", Env: "AI_GATEWAY_OPENAI_API_KEY"},
 	{Name: "anthropic", DisplayName: "Anthropic API key", Provider: "Anthropic", Env: "AI_GATEWAY_ANTHROPIC_API_KEY"},
-	{Name: "openai-secondary", DisplayName: "OpenAI secondary API key", Provider: "OpenAI", Env: "AI_GATEWAY_OPENAI_SECONDARY_API_KEY"},
-	{Name: "anthropic-secondary", DisplayName: "Anthropic secondary API key", Provider: "Anthropic", Env: "AI_GATEWAY_ANTHROPIC_SECONDARY_API_KEY"},
 }
 
 type keyedProvider struct {
