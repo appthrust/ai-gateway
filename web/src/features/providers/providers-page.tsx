@@ -2,8 +2,8 @@ import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-q
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { Fragment, useEffect, useState } from 'react'
 import { gatewayApi, isGatewayError } from '../../api/client'
-import { configQuery, providersQuery } from '../../api/queries'
-import type { ProviderKind, ProviderState, ProviderView } from '../../api/types'
+import { configQuery, providersQuery, statusQuery } from '../../api/queries'
+import type { CredentialKeyView, ProviderState, ProviderView } from '../../api/types'
 import type { MessageId } from '../../copy'
 import { useText } from '../../i18n'
 import { dashboardLinks, type DashboardLinks } from '../../model/dashboard'
@@ -12,11 +12,6 @@ import { isStaticProvider, providerAction, PROVIDER_STATE_MESSAGE, PROVIDER_STAT
 import { Badge, Button, Card, EmptyState, PageHeader, Section, useDocumentTitle } from '../../ui'
 import { FixLink } from '../common/fix-link'
 
-const KIND_MESSAGE: Record<ProviderKind, MessageId> = {
-  InProjectApp: 'aiGateway.providers.kind.InProjectApp',
-  OpenAI: 'aiGateway.providers.kind.OpenAI',
-  Anthropic: 'aiGateway.providers.kind.Anthropic',
-}
 
 const LEGEND: { state: ProviderState; meaning: MessageId }[] = [
   { state: 'Serving', meaning: 'aiGateway.providers.legend.Serving' },
@@ -38,6 +33,7 @@ export function ProvidersPage() {
   return (
     <>
       <PageHeader title={t('aiGateway.nav.providers')} lead={t('aiGateway.providers.lead')} />
+      <CredentialKeys providers={providers} links={links} />
       {providers.length === 0 ? (
         <EmptyState title={t('aiGateway.providers.empty.title')} body={t('aiGateway.providers.empty.body')} />
       ) : (
@@ -88,6 +84,48 @@ export function ProvidersPage() {
     </>
   )
 }
+export function CredentialKeys({ providers, links }: { providers: ProviderView[]; links: DashboardLinks }) {
+  const { t, language } = useText()
+  return (
+    <Section title={t('aiGateway.keys.title')}>
+      <p className="mb-3 text-sm text-stone-600">{t('aiGateway.keys.description')}</p>
+      <FixLink text={t('aiGateway.keys.manage')} place="installation" href={links.installation} />
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <caption className="sr-only">{t('aiGateway.keys.title')}</caption>
+          <thead className="border-b border-line text-xs text-stone-500">
+            <tr>
+              <th scope="col" className="p-3">{t('aiGateway.field.provider')}</th>
+              <th scope="col" className="p-3">{t('aiGateway.keys.slot')}</th>
+              <th scope="col" className="p-3">{t('aiGateway.providers.col.state')}</th>
+              <th scope="col" className="p-3">{t('aiGateway.providers.col.checked')}</th>
+              <th scope="col" className="p-3">{t('aiGateway.providers.col.actions')}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {providers.flatMap((provider) => provider.keys.map((key) => (
+              <tr key={key.slot}>
+                <td className="p-3">{provider.kind}</td>
+                <th scope="row" className="p-3 font-mono font-normal">{key.slot}</th>
+                <td className="p-3">
+                  <Badge tone={key.state === 'usable' ? 'ok' : key.state === 'unchecked' ? 'neutral' : 'bad'}>
+                    {t(`aiGateway.keys.state.${key.state}`)}
+                  </Badge>
+                  {!key.bound ? <span className="ml-2 text-xs text-stone-500">{t('aiGateway.providers.source.unbound')}</span> : null}
+                </td>
+                <td className="p-3 whitespace-nowrap">
+                  {key.observedAt ? <time dateTime={key.observedAt}>{formatTime(language, key.observedAt)}</time> : t('aiGateway.providers.neverChecked')}
+                </td>
+                <td className="p-3">{key.bound ? <RecheckButton provider={provider} credentialKey={key} /> : null}</td>
+              </tr>
+            )))}
+          </tbody>
+        </table>
+      </div>
+    </Section>
+  )
+}
+
 
 function ProviderRows({ provider, links, open, onToggle }: { provider: ProviderView; links: DashboardLinks; open: boolean; onToggle: () => void }) {
   const { t, language, locale } = useText()
@@ -110,7 +148,7 @@ function ProviderRows({ provider, links, open, onToggle }: { provider: ProviderV
             <span className="sr-only">{t(open ? 'aiGateway.providers.hideModels' : 'aiGateway.providers.showModels')}</span>
           </button>
         </th>
-        <td className="px-4 py-3 text-stone-700">{t(KIND_MESSAGE[provider.kind])}</td>
+        <td className="px-4 py-3 text-stone-700">{provider.kind === 'InProjectApp' ? t('aiGateway.providers.kind.InProjectApp') : provider.kind}</td>
         <td className="px-4 py-3 text-stone-700">
           {'link' in provider.source ? (
             <>
@@ -196,16 +234,17 @@ function ModelList({ provider }: { provider: ProviderView }) {
  * Forces a probe. A 429 means the last probe is younger than 30 s: the button says how old the shown result is and
  * when a new check is possible, instead of pretending to re-check.
  */
-function RecheckButton({ provider }: { provider: ProviderView }) {
+function RecheckButton({ provider, credentialKey }: { provider: ProviderView; credentialKey?: CredentialKeyView }) {
   const { t, locale } = useText()
   const client = useQueryClient()
   const [waitUntil, setWaitUntil] = useState<number>()
   const [now, setNow] = useState(() => Date.now())
   const check = useMutation({
-    mutationFn: () => gatewayApi.check(provider.name),
+    mutationFn: () => gatewayApi.check(provider.name, credentialKey?.slot),
     onSuccess: (view) => {
       setWaitUntil(undefined)
       client.setQueryData(providersQuery.queryKey, (current) => current?.map((item) => (item.name === view.name ? view : item)))
+      void client.invalidateQueries({ queryKey: statusQuery.queryKey })
     },
     onError: (error) => {
       if (isGatewayError(error, 'ai_check_rate_limited')) setWaitUntil(Date.now() + (error.retryAfterSeconds ?? 30) * 1000)
@@ -226,7 +265,7 @@ function RecheckButton({ provider }: { provider: ProviderView }) {
       <span aria-live="polite" className="text-xs text-stone-500">
         {waiting
           ? t('aiGateway.providers.recheckCached', {
-              age: provider.observedAt ? formatAge(locale, provider.observedAt, now) : '—',
+              age: (credentialKey?.observedAt ?? provider.observedAt) ? formatAge(locale, (credentialKey?.observedAt ?? provider.observedAt)!, now) : '—',
               seconds: Math.ceil((waitUntil - now) / 1000),
             })
           : failed

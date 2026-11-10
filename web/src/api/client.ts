@@ -72,7 +72,7 @@ export interface GatewayApi {
   status(): Promise<GatewayStatus>
   providers(): Promise<ProviderView[]>
   /** Forces a probe; 429 `ai_check_rate_limited` with `retryAfterSeconds` while the last probe is younger than 30 s. */
-  check(name: string): Promise<ProviderView>
+  check(name: string, slot?: string): Promise<ProviderView>
   invocations(query?: InvocationQuery): Promise<InvocationPage>
   models(): Promise<Answer<ModelList>>
   chat(request: ChatRequest, signal?: AbortSignal): Promise<Answer<ChatCompletion>>
@@ -132,7 +132,7 @@ export function createGatewayApi(fetcher: Fetcher = (input, init) => fetch(input
     config: () => read<Config>('/config'),
     status: () => read<GatewayStatus>(`${BASE}/status`),
     providers: async () => (await read<ProvidersResponse>(`${BASE}/providers`)).items,
-    check: async (name) => (await (await open('POST', `${BASE}/providers/${encodeURIComponent(name)}/check`)).json()) as ProviderView,
+    check: async (name, slot) => (await (await open('POST', `${BASE}/providers/${encodeURIComponent(name)}${slot ? `/keys/${encodeURIComponent(slot)}` : ''}/check`)).json()) as ProviderView,
     invocations: (query) => read<InvocationPage>(`${BASE}/invocations${invocationSearch(query)}`),
     models: async () => answer<ModelList>(await open('GET', '/v1/models', { timeoutMs: MODELS_TIMEOUT_MS })),
     chat: async (request, signal) => answer<ChatCompletion>(await open('POST', '/v1/chat/completions', { body: { ...request, stream: false }, signal })),

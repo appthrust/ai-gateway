@@ -16,6 +16,7 @@ const llm: ProviderView = {
   message: '',
   observedAt: '2026-11-09T10:00:00Z',
   embeddings: false,
+  keys: [],
   models: [
     { id: 'gemma3:4b', allowed: true, default: true, deniedBy: null },
     { id: 'llama3.1:70b', allowed: false, default: false, deniedBy: { provider: 'llm', patterns: ['gemma3:*'] } },
@@ -30,6 +31,7 @@ const openai: ProviderView = {
   message: '',
   observedAt: '2026-11-09T09:58:00Z',
   embeddings: true,
+  keys: [{ slot: 'openai', bound: true, state: 'rejected', observedAt: '2026-11-09T09:58:00Z' }],
   models: [{ id: 'gpt-5-mini', allowed: true, default: false, deniedBy: null }],
 }
 // What GET /v1/models returns under Enforced: only allowed models of providers that could list.

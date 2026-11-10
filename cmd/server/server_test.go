@@ -186,7 +186,7 @@ func TestUnauthenticatedRequestsAreNotRecorded(t *testing.T) {
 			if hits.Load() != 0 || g.recorder.DeliveredCount() != 0 || g.recorder.DroppedCount(dropRejected) != 0 {
 				t.Fatalf("hits=%d delivered=%d rejected=%d", hits.Load(), g.recorder.DeliveredCount(), g.recorder.DroppedCount(dropRejected))
 			}
-			if !g.providers.healthObserved.IsZero() {
+			if len(g.providers.healthProbes) != 0 {
 				t.Fatal("unauthenticated request recorded a health observation")
 			}
 		})

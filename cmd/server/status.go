@@ -74,13 +74,18 @@ type GatewayStatus struct {
 	NextSteps    []nextStep        `json:"nextSteps"`
 }
 
-func decideConfigured(openai, anthropic bool, bindings []link.Binding) configuredView {
-	v := configuredView{Satisfied: openai || anthropic, Candidates: []requirementCandidate{
-		{Kind: "CredentialSlot", Name: "openai", Satisfied: openai},
-		{Kind: "CredentialSlot", Name: "anthropic", Satisfied: anthropic},
-	}}
-	for _, b := range bindings {
-		if b.State == link.StateReady {
+func decideConfigured(snapshot providerSnapshot) configuredView {
+	v := configuredView{Candidates: []requirementCandidate{}}
+	for _, slot := range credentialSlots {
+		bound := false
+		for _, p := range snapshot.static {
+			bound = bound || observationID(p) == slot.Name
+		}
+		v.Candidates = append(v.Candidates, requirementCandidate{Kind: "CredentialSlot", Name: slot.Name, Satisfied: bound})
+		v.Satisfied = v.Satisfied || bound
+	}
+	for _, b := range snapshot.bindings {
+		if b.State == link.StateReady && b.InternalURL != "" {
 			v.Candidates = append(v.Candidates, requirementCandidate{Kind: "Link", Name: b.Definition, Satisfied: true})
 			v.Satisfied = true
 		}
@@ -98,47 +103,67 @@ func decidePolicyHealth(document aipolicy.Document) (health.Status, bool) {
 	return health.Status{}, false
 }
 
-func decideResolutionHealth(hasResolver, started bool) health.Status {
-	if !hasResolver {
-		return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No AI provider is configured"}
+// Failed alternatives remain per-provider findings, not capability degradation.
+func decideCapabilityHealth(usable, unchecked bool, failure health.Status) health.Status {
+	if usable {
+		return health.Status{State: apphealth.StateServing}
 	}
-	if !started {
-		return health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonNoEvidence, Message: "No recent authenticated provider resolution"}
+	if unchecked {
+		return health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonNoEvidence, Message: "Provider availability has not been established"}
 	}
-	return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No recent authenticated provider resolution"}
-}
-
-func decideProbeHealth(result, candidate health.Status) health.Status {
-	if candidate.State == apphealth.StateServing || result.State != apphealth.StateServing && candidate.Reason == apphealth.ReasonUpstreamDenied {
-		return candidate
+	if failure.State == apphealth.StateFailing {
+		return failure
 	}
-	return result
+	return health.Status{State: apphealth.StateFailing, Reason: apphealth.ReasonDependencyUnavailable, Message: "No AI provider is Ready"}
 }
 
 func decideHealth(document aipolicy.Document, snapshot providerSnapshot, now time.Time) healthView {
 	status, blocked := decidePolicyHealth(document)
 	var observed time.Time
 	if !blocked {
-		switch {
-		case !snapshot.healthObserved.IsZero() && now.Sub(snapshot.healthObserved) <= providerHealthWindow:
-			status, observed = snapshot.healthResult, snapshot.healthObserved
-		case len(snapshot.static) == 0:
-			status = decideResolutionHealth(snapshot.hasResolver, snapshot.healthStarted)
-		default:
-			status = providerHealthStatus(0, nil)
-			for _, p := range snapshot.static {
-				o := snapshot.observations[p.Name()]
-				if o.observed.IsZero() || now.Sub(o.observed) > providerHealthWindow {
-					continue
-				}
-				status = decideProbeHealth(status, o.status)
-				if o.observed.After(observed) {
-					observed = o.observed
-				}
+		usable, unchecked := false, snapshot.discoveryFailed
+		failure := health.Status{}
+		add := func(name string, o providerObservation, ready bool) {
+			if document.Mode == aipolicy.ModeEnforced && !providerInPolicy(document, name) {
+				return
 			}
-			if observed.IsZero() {
-				status = health.Status{State: apphealth.StateUnknown, Reason: apphealth.ReasonNoEvidence}
+			if o.observed.After(observed) {
+				observed = o.observed
 			}
+			if o.observed.IsZero() {
+				usable = usable || ready
+				unchecked = unchecked || !ready
+			} else if o.status.State == apphealth.StateServing {
+				usable = true
+			} else if o.status.State == apphealth.StateFailing {
+				if failure.State == "" || o.status.Reason == apphealth.ReasonUpstreamDenied {
+					failure = o.status
+				}
+			} else {
+				unchecked = true
+			}
+		}
+		for _, p := range snapshot.static {
+			add(p.Name(), snapshot.observations[observationID(p)], false)
+		}
+		for _, binding := range snapshot.bindings {
+			if binding.State != link.StateReady || binding.InternalURL == "" {
+				continue
+			}
+			o := snapshot.observations[binding.Definition]
+			// A refreshed Ready link supersedes old inference failures.
+			if !o.observed.IsZero() && now.Sub(o.observed) > providerHealthWindow {
+				o = providerObservation{}
+			}
+			add(binding.Definition, o, true)
+		}
+		status = decideCapabilityHealth(usable, unchecked, failure)
+		if status.State == apphealth.StateUnknown && snapshot.discoveryFailed {
+			status.Reason, status.Message = apphealth.ReasonDependencyUnavailable, "Provider discovery is unavailable"
+		}
+		if status.State == apphealth.StateServing && !snapshot.policyDeniedAt.IsZero() && now.Sub(snapshot.policyDeniedAt) <= providerHealthWindow {
+			status = health.Status{State: apphealth.StateDegraded, Reason: apphealth.ReasonUpstreamDenied}
+			observed = snapshot.policyDeniedAt
 		}
 	}
 	v := healthView{State: status.State, Reason: status.Reason, Message: status.Message}
@@ -157,22 +182,6 @@ func decideDefaultRoute(document aipolicy.Document, snapshot providerSnapshot, d
 	if document.Mode == aipolicy.ModeEnforced {
 		decideEnforced(document, &record)
 		if record.Model == "" || !document.Allows(record.Provider, record.Model).Allowed {
-			return nil
-		}
-	}
-	name := record.Provider
-	if document.Mode == aipolicy.ModeUnrestricted && name == "" {
-		name = defaultProvider
-	}
-	if snapshot.discoveryFailed {
-		found := false
-		for _, p := range snapshot.static {
-			if p.Name() == name {
-				found = true
-				break
-			}
-		}
-		if !found {
 			return nil
 		}
 	}
@@ -204,9 +213,6 @@ func decideNextSteps(document aipolicy.Document, configured configuredView, heal
 	if document.Mode == aipolicy.ModeEnforced && document.Logging != nil && document.Logging.Conversation == "Full" {
 		return append(steps, nextStep{Kind: "ContactAdmin", Reason: "ai_policy_logging_unavailable"})
 	}
-	if configured.Satisfied && health.State == apphealth.StateServing {
-		return steps
-	}
 	if !configured.Satisfied {
 		for _, c := range configured.Candidates {
 			if c.Kind == "CredentialSlot" && !c.Satisfied {
@@ -216,18 +222,29 @@ func decideNextSteps(document aipolicy.Document, configured configuredView, heal
 	}
 	install := false
 	for _, p := range providers {
+		keyFailure := false
+		for _, key := range p.Keys {
+			if key.Bound && (key.State == "rejected" || key.State == "unreachable") {
+				steps = append(steps, nextStep{Kind: "FixProvider", Provider: p.Name, Slot: key.Slot})
+				keyFailure = true
+			}
+		}
 		switch p.State {
 		case "Denied", "Unreachable":
-			steps = append(steps, nextStep{Kind: "FixProvider", Provider: p.Name})
+			if !keyFailure {
+				steps = append(steps, nextStep{Kind: "FixProvider", Provider: p.Name})
+			}
 		case "NotInstalled":
-			steps = append(steps, nextStep{Kind: "InstallApp", DefinitionID: p.Name})
-			install = true
+			if !configured.Satisfied {
+				steps = append(steps, nextStep{Kind: "InstallApp", DefinitionID: p.Name})
+				install = true
+			}
 		}
 	}
 	if !configured.Satisfied && !install {
 		steps = append(steps, nextStep{Kind: "InstallApp", DefinitionID: "inference"})
 	}
-	if document.Mode == aipolicy.ModeUnrestricted {
+	if document.Mode == aipolicy.ModeUnrestricted && health.State != apphealth.StateServing {
 		steps = append(steps, nextStep{Kind: "BindPolicy"})
 	}
 	return steps
@@ -259,7 +276,7 @@ func (g *gateway) status(w http.ResponseWriter, r *http.Request) {
 	snapshot := g.providers.snapshot(r.Context())
 	now := time.Now()
 	v := GatewayStatus{Mode: g.policy.Mode, Logging: g.policy.Logging,
-		Configured:   decideConfigured(os.Getenv("AI_GATEWAY_OPENAI_API_KEY") != "", os.Getenv("AI_GATEWAY_ANTHROPIC_API_KEY") != "", snapshot.bindings),
+		Configured:   decideConfigured(snapshot),
 		Health:       decideHealth(g.policy, snapshot, now),
 		DefaultRoute: decideDefaultRoute(g.policy, snapshot, g.defaultProvider, g.defaultModel),
 		Endpoints:    endpointView{Internal: internalEndpoint()},

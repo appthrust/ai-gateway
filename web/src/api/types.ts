@@ -40,7 +40,7 @@ export type NextStep =
   | { kind: 'BindCredential'; slot: string }
   | { kind: 'InstallApp'; definitionId: string }
   | { kind: 'BindPolicy' }
-  | { kind: 'FixProvider'; provider: string }
+  | { kind: 'FixProvider'; provider: string; slot?: string }
   | { kind: 'ContactAdmin'; reason: string }
 
 export interface GatewayStatus {
@@ -55,7 +55,7 @@ export interface GatewayStatus {
   nextSteps: NextStep[]
 }
 
-export type ProviderKind = 'InProjectApp' | 'OpenAI' | 'Anthropic'
+export type ProviderKind = string
 export type ProviderState =
   | 'Serving'
   | 'Denied'
@@ -76,6 +76,13 @@ export interface ModelView {
   deniedBy: { provider: string; patterns: string[] } | null
 }
 
+export interface CredentialKeyView {
+  slot: string
+  bound: boolean
+  state: 'usable' | 'rejected' | 'unreachable' | 'unchecked'
+  observedAt: string | null
+}
+
 export interface ProviderView {
   name: string
   kind: ProviderKind
@@ -86,6 +93,7 @@ export interface ProviderView {
   observedAt: string | null
   embeddings: boolean
   models: ModelView[]
+  keys: CredentialKeyView[]
 }
 
 export interface ProvidersResponse {

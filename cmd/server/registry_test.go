@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -318,17 +319,13 @@ func TestRegistryActiveHealthExpiryAndTrafficOverride(t *testing.T) {
 		{State: apphealth.StateServing},
 		{State: apphealth.StateFailing, Reason: apphealth.ReasonUpstreamUnavailable},
 	} {
-		r.observeHealth(status)
+		r.observeProvider(r.static[0], status)
 		if got := r.healthStatus(context.Background()); got != status || calls.Load() != 1 {
 			t.Fatalf("traffic override=%+v calls=%d", got, calls.Load())
 		}
 	}
-	r.healthMu.Lock()
-	r.healthObserved = time.Now().Add(-providerHealthWindow - time.Second)
-	r.healthMu.Unlock()
-	if got := r.healthStatus(context.Background()); got.Reason != apphealth.ReasonUpstreamDenied || calls.Load() != 1 {
-		t.Fatalf("cached health=%+v calls=%d", got, calls.Load())
-	}
+	// Idle checks refresh evidence, rather than switching to a different
+	// gateway-wide traffic cache.
 	r.healthMu.Lock()
 	r.healthProbes["test"].observed = time.Now().Add(-providerHealthWindow - time.Second)
 	r.healthMu.Unlock()
@@ -353,7 +350,7 @@ func TestRegistryTrafficWinsOverInflightProbe(t *testing.T) {
 	result := make(chan health.Status, 1)
 	go func() { result <- r.healthStatus(context.Background()) }()
 	<-entered
-	r.observeHealth(health.Status{State: apphealth.StateServing})
+	r.observeProvider(r.static[0], health.Status{State: apphealth.StateServing})
 	close(release)
 	if got := <-result; got.State != apphealth.StateServing {
 		t.Fatalf("probe overwrote traffic: %+v", got)
@@ -369,43 +366,39 @@ func (f healthResolver) ByCapability(ctx context.Context, bearer, capability str
 func TestRegistryResolverHealthEvidence(t *testing.T) {
 	calls := 0
 	ready := false
-	r := &registry{resolver: healthResolver(func(_ context.Context, bearer, capability string) ([]link.Binding, error) {
+	unavailable := false
+	type callerAuthority struct{}
+	r := &registry{resolver: healthResolver(func(ctx context.Context, bearer, capability string) ([]link.Binding, error) {
 		calls++
-		if bearer != "" || capability != chatcompletions.Capability {
-			t.Error("discovery must not receive caller authority")
+		if bearer != "" || capability != chatcompletions.Capability || ctx.Value(callerAuthority{}) != nil {
+			t.Error("health discovery must not receive caller authority")
+		}
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("health discovery must be bounded")
+		}
+		if unavailable {
+			return nil, errors.New("discovery unavailable")
 		}
 		if ready {
 			return []link.Binding{{Definition: "inference", State: link.StateReady, InternalURL: "http://inference"}}, nil
 		}
 		return nil, nil
 	})}
-	ctx := context.Background()
-	if got := r.healthStatus(ctx); got.State != apphealth.StateUnknown || got.Reason != apphealth.ReasonNoEvidence {
-		t.Fatalf("first observation=%+v", got)
-	}
-	if got := r.healthStatus(ctx); got.State != apphealth.StateFailing || got.Reason != apphealth.ReasonDependencyUnavailable {
-		t.Fatalf("second observation=%+v", got)
-	}
-	if calls != 0 {
-		t.Fatalf("health triggered unauthenticated discovery: calls=%d", calls)
-	}
-	if _, err := r.providers(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := r.healthStatus(ctx); got.State != apphealth.StateFailing || got.Message != "No AI provider is Ready" {
-		t.Fatalf("empty discovery=%+v", got)
+	ctx := context.WithValue(context.Background(), callerAuthority{}, "must-not-be-retained")
+	if got := r.healthStatus(ctx); got.State != apphealth.StateFailing {
+		t.Fatalf("known empty discovery=%+v", got)
 	}
 	ready = true
-	if _, err := r.providers(ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if got := r.healthStatus(ctx); got.State != apphealth.StateServing {
+			t.Fatalf("idle Ready discovery=%+v", got)
+		}
 	}
-	if got := r.healthStatus(ctx); got.State != apphealth.StateServing {
-		t.Fatalf("ready discovery=%+v", got)
+	unavailable = true
+	if got := r.healthStatus(ctx); got.State != apphealth.StateUnknown {
+		t.Fatalf("unavailable discovery=%+v", got)
 	}
-	r.healthMu.Lock()
-	r.healthObserved = time.Now().Add(-providerHealthWindow - time.Second)
-	r.healthMu.Unlock()
-	if got := r.healthStatus(ctx); got.Reason == apphealth.ReasonNoEvidence || got.State != apphealth.StateFailing {
-		t.Fatalf("expired discovery=%+v", got)
+	if calls != 4 {
+		t.Fatalf("workload discovery calls=%d", calls)
 	}
 }

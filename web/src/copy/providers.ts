@@ -2,6 +2,15 @@
 import { defineDashboardMessages } from '@appthrust/platform-dashboard-i18n'
 
 export const providerMessages = defineDashboardMessages({
+  'aiGateway.keys.title': { defaultMessage: 'Provider keys', translations: { ja: 'プロバイダーの API キー' } },
+  'aiGateway.keys.description': { defaultMessage: 'Key values stay in the Dashboard. Add, replace or remove them on the AI Gateway installation page; Project Settings → AI manages the policy.', translations: { ja: 'キーの追加・差し替え・解除は Dashboard の AI Gateway 設定で行います。Project 設定の「AI」はポリシーの設定です。ここにキーの値は表示されません。' } },
+  'aiGateway.keys.manage': { defaultMessage: 'Manage keys in the Dashboard', translations: { ja: 'Dashboard でキーを管理する' } },
+  'aiGateway.keys.slot': { defaultMessage: 'Credential slot', translations: { ja: 'キーのスロット名' } },
+  'aiGateway.keys.state.usable': { defaultMessage: 'Usable key', translations: { ja: '利用可能' } },
+  'aiGateway.keys.state.rejected': { defaultMessage: 'Rejected key', translations: { ja: '認証拒否' } },
+  'aiGateway.keys.state.unreachable': { defaultMessage: 'Key check unreachable', translations: { ja: '接続不可' } },
+  'aiGateway.keys.state.unchecked': { defaultMessage: 'Unchecked key', translations: { ja: '未確認' } },
+  'aiGateway.keys.fix': { defaultMessage: 'Check {provider} key “{slot}”', translations: { ja: '{provider} のキー「{slot}」を確認する' } },
   'aiGateway.providers.lead': {
     defaultMessage: 'Every provider the gateway knows, whether it can serve right now, and which of its models the policy allows.',
     translations: { ja: 'AI Gateway が把握しているプロバイダーと、いま使えるかどうか、ポリシーで許可しているモデルです。' },
@@ -47,8 +56,8 @@ export const providerMessages = defineDashboardMessages({
   'aiGateway.providers.recheckFailed': { defaultMessage: 'The check could not run. Try again later.', translations: { ja: '確認できませんでした。しばらくしてからお試しください。' } },
   'aiGateway.providers.legend.title': { defaultMessage: 'What the states mean', translations: { ja: '状態の意味' } },
   'aiGateway.providers.legend.Serving': {
-    defaultMessage: 'The health check or a real call succeeded in the last 5 minutes.',
-    translations: { ja: '直近 5 分以内に、ヘルスチェックか実際の呼び出しが成功しました。' },
+    defaultMessage: 'The latest check succeeded, or workload discovery reports a Ready linked app.',
+    translations: { ja: '最後の確認が成功したか、連携アプリが Ready と報告されています。' },
   },
   'aiGateway.providers.legend.Denied': {
     defaultMessage: 'The provider rejected the API key (401/403). Replace it in the Dashboard.',

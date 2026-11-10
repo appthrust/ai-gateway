@@ -25,6 +25,14 @@ spec:
         env: AI_GATEWAY_ANTHROPIC_API_KEY
         name: anthropic
         provider: Anthropic
+      - displayName: OpenAI secondary API key
+        env: AI_GATEWAY_OPENAI_SECONDARY_API_KEY
+        name: openai-secondary
+        provider: OpenAI
+      - displayName: Anthropic secondary API key
+        env: AI_GATEWAY_ANTHROPIC_SECONDARY_API_KEY
+        name: anthropic-secondary
+        provider: Anthropic
       internalService: true
       livenessProbePath: /healthz
       minScale: 1
