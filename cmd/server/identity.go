@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 
+	"github.com/appthrust/appserver-go/aipolicy"
 	"github.com/appthrust/appserver-go/appserver/identity"
 	"github.com/appthrust/appserver-go/appserver/platformclient"
 )
@@ -62,9 +63,9 @@ func (g *gateway) authenticate(w http.ResponseWriter, r *http.Request) (identity
 	caller, bearer, err := g.auth.Authenticate(r.Context(), r.Header.Get("Authorization"))
 	if err != nil {
 		if errors.Is(err, identity.ErrUnavailable) {
-			writeError(w, http.StatusServiceUnavailable, "identity_unavailable", "Caller identity is temporarily unavailable")
+			writeError(w, r, http.StatusServiceUnavailable, aipolicy.OutcomeError, "identity_unavailable", "Caller identity is temporarily unavailable")
 		} else {
-			writeError(w, http.StatusUnauthorized, "ai_unauthorized", "A valid caller bearer is required")
+			writeError(w, r, http.StatusUnauthorized, aipolicy.OutcomeDenied, "ai_unauthorized", "A valid caller bearer is required")
 		}
 		return identity.Identity{}, "", false
 	}

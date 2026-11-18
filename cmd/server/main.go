@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/appthrust/appserver-go/appserver/link"
 	"github.com/appthrust/appserver-go/appserver/platformclient"
 	"github.com/appthrust/appserver-go/appserver/platformenv"
+	"github.com/appthrust/appserver-go/appserver/requestlog"
 )
 
 func policyFromEnv() (aipolicy.Document, error) {
@@ -33,6 +35,16 @@ func policyFromEnv() (aipolicy.Document, error) {
 		return aipolicy.Document{}, errors.New("invalid AI policy document")
 	}
 	return aipolicy.Decode(mode, document)
+}
+
+func newHTTPServer(addr string, g *gateway, requestLog io.Writer) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           requestlog.Wrap(g.handler(), requestlog.Options{Service: "ai-gateway", Output: requestLog}),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 func main() {
@@ -68,8 +80,7 @@ func main() {
 		// Reporting outlives the signal context so HTTP shutdown can finish enqueueing.
 		recorder: newRecorder(context.Background(), platform.APIURL, platform.ProjectID, auth.HTTPClient().Transport),
 	}
-	server := &http.Server{Addr: *listen, Handler: gateway.handler(), ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
+	server := newHTTPServer(*listen, gateway, os.Stderr)
 	// No WriteTimeout or whole-request middleware: upstream inference headers and
 	// read-idle each allow 300 seconds; model discovery headers allow 30 seconds.
 	// Upstream connect/TLS deadlines remain 10 seconds.

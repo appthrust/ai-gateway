@@ -379,7 +379,7 @@ func (g *gateway) checkProvider(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, "ai_key_unknown", "The AI provider key is unknown or unbound")
+		writeError(w, r, http.StatusNotFound, aipolicy.OutcomeError, "ai_key_unknown", "The AI provider key is unknown or unbound")
 		return
 	}
 	g.providers.refreshObservations(&snapshot)
@@ -389,5 +389,5 @@ func (g *gateway) checkProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeError(w, http.StatusNotFound, "ai_provider_unknown", "The AI provider is unknown")
+	writeError(w, r, http.StatusNotFound, aipolicy.OutcomeError, "ai_provider_unknown", "The AI provider is unknown")
 }
