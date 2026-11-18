@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -391,6 +392,40 @@ func (r *readAfterEvent) Read(p []byte) (int, error) {
 	n := copy(p, r.event)
 	r.event = r.event[n:]
 	return n, nil
+}
+
+func TestRequestLogForIncompleteStream(t *testing.T) {
+	const event = "data: {\"choices\":[{\"delta\":{\"content\":\"private-reply\"}}]}\n\n"
+	p := &fakeProvider{name: "test", complete: func(context.Context, provider.Request, bool) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(event))}, nil
+	}}
+	var logs bytes.Buffer
+	server := newHTTPServer(":0", testGateway(p, enforced("Off")), &logs)
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions?key=private-query", strings.NewReader(`{"stream":true,"messages":[{"content":"private-prompt"}]}`))
+	r.Header.Set("Authorization", "Bearer caller")
+	w := httptest.NewRecorder()
+	server.Handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != event || !w.Flushed {
+		t.Fatalf("incomplete stream: status=%d flushed=%t body=%q", w.Code, w.Flushed, w.Body)
+	}
+	if bytes.Count(logs.Bytes(), []byte("\n")) != 1 {
+		t.Fatalf("want one request log line, got %q", &logs)
+	}
+	var entry struct {
+		Service, Outcome, Reason string
+		Status                   int
+	}
+	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Service != "ai-gateway" || entry.Status != http.StatusOK || entry.Outcome != string(aipolicy.OutcomeError) || entry.Reason != "ai_provider_error" {
+		t.Fatalf("unexpected request log: %+v", entry)
+	}
+	for _, private := range []string{"private-query", "private-prompt", "private-reply", "Bearer caller"} {
+		if strings.Contains(logs.String(), private) {
+			t.Fatalf("request log included %q", private)
+		}
+	}
 }
 
 func TestTerminalStreamEventStopsReadingAndIncompleteStreamIsRecorded(t *testing.T) {

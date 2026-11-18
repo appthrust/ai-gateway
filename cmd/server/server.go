@@ -16,6 +16,7 @@ import (
 	"github.com/appthrust/appserver-go/appserver/health"
 	"github.com/appthrust/appserver-go/appserver/identity"
 	"github.com/appthrust/appserver-go/appserver/releaseidentity"
+	"github.com/appthrust/appserver-go/appserver/requestlog"
 )
 
 const maxRequestBytes = 4 << 20
@@ -103,10 +104,10 @@ func (g *gateway) authenticated(next invocationHandler) http.HandlerFunc {
 		}()
 		switch {
 		case g.policy.Mode == aipolicy.ModePending:
-			fail(w, &record, http.StatusForbidden, "ai_policy_pending", "The Project AI policy is not ready")
+			fail(w, r, &record, http.StatusForbidden, "ai_policy_pending", "The Project AI policy is not ready")
 			return
 		case g.policy.Mode == aipolicy.ModeEnforced && g.policy.Logging != nil && g.policy.Logging.Conversation == "Full":
-			fail(w, &record, http.StatusServiceUnavailable, "ai_policy_logging_unavailable", "Full conversation logging is unavailable")
+			fail(w, r, &record, http.StatusServiceUnavailable, "ai_policy_logging_unavailable", "Full conversation logging is unavailable")
 			return
 		}
 		next(w, r, &record)
@@ -130,9 +131,9 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 	if err != nil || body == nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			fail(w, record, http.StatusRequestEntityTooLarge, "ai_request_too_large", "AI request body must not exceed 4 MiB")
+			fail(w, r, record, http.StatusRequestEntityTooLarge, "ai_request_too_large", "AI request body must not exceed 4 MiB")
 		} else {
-			fail(w, record, http.StatusBadRequest, "ai_invalid_request", "AI request must be one JSON object")
+			fail(w, r, record, http.StatusBadRequest, "ai_invalid_request", "AI request must be one JSON object")
 		}
 		return
 	}
@@ -144,7 +145,7 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 		{"provider", &record.Provider}, {"model", &record.Model}, {"stream", &stream},
 	} {
 		if value, ok := body[field.name]; ok && json.Unmarshal(value, field.target) != nil {
-			fail(w, record, http.StatusBadRequest, "ai_invalid_request", "Invalid provider, model, or stream field")
+			fail(w, r, record, http.StatusBadRequest, "ai_invalid_request", "Invalid provider, model, or stream field")
 			return
 		}
 	}
@@ -157,17 +158,17 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 	if g.policy.Mode == aipolicy.ModeEnforced {
 		g.resolveEnforced(record)
 		if !g.policy.Allows(record.Provider, record.Model).Allowed || record.Model == "" {
-			fail(w, record, http.StatusForbidden, "ai_model_denied", "The requested provider/model is not allowed")
+			fail(w, r, record, http.StatusForbidden, "ai_model_denied", "The requested provider/model is not allowed")
 			return
 		}
 	}
 	selected, err := g.resolveProvider(r.Context(), record)
 	if err != nil {
-		fail(w, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
+		fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
 		return
 	}
 	if selected == nil {
-		fail(w, record, http.StatusServiceUnavailable, "ai_provider_unavailable", "No selected AI provider is available")
+		fail(w, r, record, http.StatusServiceUnavailable, "ai_provider_unavailable", "No selected AI provider is available")
 		return
 	}
 	delete(body, "provider")
@@ -180,7 +181,7 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 		options := map[string]json.RawMessage{}
 		if raw, ok := body["stream_options"]; ok && string(raw) != "null" {
 			if json.Unmarshal(raw, &options) != nil {
-				fail(w, record, http.StatusBadRequest, "ai_invalid_request", "stream_options must be an object")
+				fail(w, r, record, http.StatusBadRequest, "ai_invalid_request", "stream_options must be an object")
 				return
 			}
 		}
@@ -192,7 +193,7 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 	if r.URL.Path == "/v1/embeddings" {
 		embedder, ok := selected.(provider.Embedder)
 		if !ok {
-			fail(w, record, http.StatusNotFound, "ai_unsupported", "The selected provider does not support embeddings")
+			fail(w, r, record, http.StatusNotFound, "ai_unsupported", "The selected provider does not support embeddings")
 			return
 		}
 		response, err = embedder.Embeddings(r.Context(), in)
@@ -212,23 +213,23 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}
-		fail(w, record, http.StatusBadGateway, "ai_provider_error", "The AI provider could not complete this request")
+		fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "The AI provider could not complete this request")
 		return
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		fail(w, record, http.StatusBadGateway, "ai_provider_error", "The AI provider rejected this request")
+		fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "The AI provider rejected this request")
 		return
 	}
 	observer := newObserver(record)
 	defer observer.finish()
 	if stream {
-		g.proxyStream(w, response, observer)
+		g.proxyStream(w, r, response, observer)
 		return
 	}
 	payload, err := io.ReadAll(response.Body)
 	if err != nil || observer.observe(payload) != nil {
-		fail(w, record, http.StatusBadGateway, "ai_provider_error", "The AI provider returned an invalid response")
+		fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "The AI provider returned an invalid response")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -237,6 +238,7 @@ func (g *gateway) complete(w http.ResponseWriter, r *http.Request, record *aipol
 	w.WriteHeader(response.StatusCode)
 	if _, err := w.Write(payload); err != nil {
 		record.Outcome, record.Reason = aipolicy.OutcomeError, "ai_response_interrupted"
+		requestlog.SetOutcome(r, string(record.Outcome), record.Reason)
 	}
 }
 
@@ -258,14 +260,14 @@ func (g *gateway) resolveProvider(ctx context.Context, record *aipolicy.Invocati
 	return decideProvider(g.policy.Mode, g.defaultProvider, g.defaultModel, candidates, record), nil
 }
 
-func (g *gateway) proxyStream(w http.ResponseWriter, response *http.Response, observer *responseObserver) {
+func (g *gateway) proxyStream(w http.ResponseWriter, r *http.Request, response *http.Response, observer *responseObserver) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		fail(w, observer.record, http.StatusBadGateway, "ai_provider_error", "Streaming is unavailable")
+		fail(w, r, observer.record, http.StatusBadGateway, "ai_provider_error", "Streaming is unavailable")
 		return
 	}
 	if !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		fail(w, observer.record, http.StatusBadGateway, "ai_provider_error", "The provider did not return an event stream")
+		fail(w, r, observer.record, http.StatusBadGateway, "ai_provider_error", "The provider did not return an event stream")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -295,6 +297,7 @@ func (g *gateway) proxyStream(w http.ResponseWriter, response *http.Response, ob
 		// Headers have already been sent. End the stream without manufacturing
 		// a [DONE] marker; the record preserves the actual HTTP status.
 		observer.record.Outcome, observer.record.Reason = aipolicy.OutcomeError, "ai_provider_error"
+		requestlog.SetOutcome(r, string(observer.record.Outcome), observer.record.Reason)
 	}
 }
 
@@ -325,7 +328,7 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, record *aipolic
 		for _, candidate := range g.policy.Providers {
 			p, err := g.providers.lookup(r.Context(), candidate.Name)
 			if err != nil {
-				fail(w, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
+				fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
 				return
 			}
 			if p == nil {
@@ -357,7 +360,7 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, record *aipolic
 	} else {
 		providers, err := g.providers.providers(r.Context())
 		if err != nil {
-			fail(w, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
+			fail(w, r, record, http.StatusBadGateway, "ai_provider_error", "Provider discovery failed")
 			return
 		}
 		for _, p := range providers {
@@ -373,19 +376,21 @@ func (g *gateway) models(w http.ResponseWriter, r *http.Request, record *aipolic
 	response := map[string]any{"object": "list", "data": models}
 	if len(failures) != 0 {
 		response["errors"] = failures
+		requestlog.SetOutcome(r, string(aipolicy.OutcomeError), "ai_provider_error")
 	}
 	writeJSON(w, http.StatusOK, response)
 }
 
-func fail(w http.ResponseWriter, record *aipolicy.InvocationRecord, status int, code, message string) {
+func fail(w http.ResponseWriter, r *http.Request, record *aipolicy.InvocationRecord, status int, code, message string) {
 	record.Status, record.Reason, record.Outcome = status, code, aipolicy.OutcomeError
 	if status == http.StatusForbidden || status == http.StatusUnauthorized || code == "ai_policy_logging_unavailable" {
 		record.Outcome = aipolicy.OutcomeDenied
 	}
-	writeError(w, status, code, message)
+	writeError(w, r, status, record.Outcome, code, message)
 }
 
-func writeError(w http.ResponseWriter, status int, code, message string) {
+func writeError(w http.ResponseWriter, r *http.Request, status int, outcome aipolicy.Outcome, code, message string) {
+	requestlog.SetOutcome(r, string(outcome), code)
 	writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
